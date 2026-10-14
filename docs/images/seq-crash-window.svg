@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 504 276" width="504" height="276" role="img" font-family="'Helvetica Neue',Helvetica,Arial,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif">
+<title>6.5 位点提交与写库之间的窗口</title>
+<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/></marker><marker id="arrd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker></defs>
+<rect x="0" y="0" width="504" height="276" fill="#ffffff"/>
+<text x="0.0" y="40" font-size="16" font-weight="700" fill="#0f172a">6.5 位点提交与写库之间的窗口</text>
+<g transform="translate(0.0,0)">
+<line x1="90.0" y1="108.0" x2="90.0" y2="256.0" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="5,4"/>
+<line x1="258.0" y1="108.0" x2="258.0" y2="256.0" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="5,4"/>
+<line x1="426.0" y1="108.0" x2="426.0" y2="256.0" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="5,4"/>
+<rect x="30.0" y="64.0" width="120.0" height="44" rx="7" fill="#f5f3ff" stroke="#a78bfa"/>
+<text x="90.0" y="90.0" font-size="11" font-weight="600" fill="#6d28d9" text-anchor="middle">Consumer</text>
+<rect x="198.0" y="64.0" width="120.0" height="44" rx="7" fill="#fef2f2" stroke="#fca5a5"/>
+<text x="258.0" y="90.0" font-size="11" font-weight="600" fill="#b91c1c" text-anchor="middle">MySQL</text>
+<rect x="366.0" y="64.0" width="120.0" height="44" rx="7" fill="#f5f3ff" stroke="#a78bfa"/>
+<text x="426.0" y="90.0" font-size="11" font-weight="600" fill="#6d28d9" text-anchor="middle">Kafka</text>
+<line x1="90.0" y1="144.0" x2="249.0" y2="144.0" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<text x="119.3" y="136.0" font-size="11.5" fill="#334155" text-anchor="start">UPSERT clicks + N</text>
+<rect x="42.0" y="180.0" width="432.0" height="30" rx="4" fill="#fefce8" stroke="#facc15"/>
+<text x="258.0" y="200.0" font-size="11" fill="#854d0e" text-anchor="middle">← 此处崩溃 / 重平衡</text>
+<line x1="90.0" y1="226.0" x2="417.0" y2="226.0" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<text x="216.1" y="218.0" font-size="11.5" fill="#334155" text-anchor="start">commit offset</text>
+</g>
+</svg>

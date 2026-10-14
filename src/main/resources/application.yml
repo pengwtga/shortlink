@@ -1,0 +1,52 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: shortlink
+  datasource:
+    url: jdbc:mysql://localhost:3306/shortlink?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: shortlink
+    password: shortlink_pass
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+  sql:
+    init:
+      mode: always
+  data:
+    redis:
+      host: localhost
+      port: 6379
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      retries: 3
+    consumer:
+      group-id: shortlink-stats
+      auto-offset-reset: latest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      type: batch
+
+shortlink:
+  base-url: http://localhost:8082
+  cache:
+    ttl-hours: 24
+  topic:
+    clicks: shortlink.clicks
+  rate-limit:
+    create-limit: 5
+    create-window-seconds: 60
+    redirect-limit: 120
+    redirect-window-seconds: 60
+
+logging:
+  level:
+    com.shortlink: INFO

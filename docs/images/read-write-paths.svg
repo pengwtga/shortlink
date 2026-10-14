@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 510" width="1200" height="510" role="img"
+     font-family="'Helvetica Neue',Helvetica,Arial,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif">
+  <title>读写路径分离</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1200" height="510" fill="#ffffff"/>
+  <text x="20" y="36" font-size="16" font-weight="700" fill="#0f172a">读写路径分离</text>
+
+  <!-- ============ 写路径 ============ -->
+  <rect x="20" y="52" width="1160" height="100" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="36" y="76" font-size="12.5" font-weight="700" fill="#1d4ed8">写路径（低频，强一致）</text>
+  <rect x="60" y="90" width="230" height="48" rx="6" fill="#ffffff" stroke="#60a5fa"/>
+  <text x="175" y="119" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">POST /api/v1/links</text>
+  <rect x="343" y="90" width="230" height="48" rx="6" fill="#ffffff" stroke="#60a5fa"/>
+  <text x="458" y="119" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">雪花 ID 发号</text>
+  <rect x="626" y="90" width="230" height="48" rx="6" fill="#ffffff" stroke="#60a5fa"/>
+  <text x="741" y="119" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">INSERT t_link</text>
+  <rect x="909" y="90" width="230" height="48" rx="6" fill="#ffffff" stroke="#60a5fa"/>
+  <text x="1024" y="119" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">SET 缓存</text>
+  <line x1="290" y1="114" x2="335" y2="114" stroke="#475569" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <line x1="573" y1="114" x2="618" y2="114" stroke="#475569" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <line x1="856" y1="114" x2="901" y2="114" stroke="#475569" stroke-width="1.4" marker-end="url(#arrow)"/>
+
+  <!-- ============ 读路径 ============ -->
+  <rect x="20" y="172" width="1160" height="176" rx="10" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text x="36" y="196" font-size="12.5" font-weight="700" fill="#047857">读路径（高频，最终一致）</text>
+  <rect x="60" y="210" width="230" height="48" rx="6" fill="#ffffff" stroke="#34d399"/>
+  <text x="175" y="239" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">GET /{code}</text>
+  <rect x="343" y="210" width="230" height="48" rx="6" fill="#ffffff" stroke="#34d399"/>
+  <text x="458" y="239" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">GET Redis</text>
+  <rect x="626" y="210" width="230" height="48" rx="6" fill="#ffffff" stroke="#34d399"/>
+  <text x="741" y="239" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">SELECT t_link</text>
+  <rect x="909" y="210" width="230" height="48" rx="6" fill="#ffffff" stroke="#34d399"/>
+  <text x="1024" y="239" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">回填 Redis</text>
+  <rect x="626" y="286" width="230" height="48" rx="6" fill="#ffffff" stroke="#34d399"/>
+  <text x="741" y="315" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">302 重定向</text>
+  <line x1="290" y1="234" x2="335" y2="234" stroke="#475569" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <line x1="573" y1="234" x2="618" y2="234" stroke="#475569" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="595" y="226" font-size="11" fill="#047857" text-anchor="middle">miss</text>
+  <line x1="856" y1="234" x2="901" y2="234" stroke="#475569" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <path d="M 458 258 L 458 310 L 618 310" fill="none" stroke="#475569" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="470" y="302" font-size="11" fill="#047857">hit</text>
+  <path d="M 1024 258 L 1024 310 L 864 310" fill="none" stroke="#475569" stroke-width="1.4" marker-end="url(#arrow)"/>
+
+  <!-- ============ 异步路径 ============ -->
+  <rect x="20" y="368" width="1160" height="100" rx="10" fill="#f5f3ff" stroke="#ddd6fe"/>
+  <text x="36" y="392" font-size="12.5" font-weight="700" fill="#6d28d9">异步路径（削峰）</text>
+  <rect x="60" y="406" width="180" height="48" rx="6" fill="#ffffff" stroke="#a78bfa"/>
+  <text x="150" y="435" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">点击事件</text>
+  <rect x="285" y="406" width="180" height="48" rx="6" fill="#ffffff" stroke="#a78bfa"/>
+  <text x="375" y="435" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">Redis INCR/PFADD</text>
+  <rect x="510" y="406" width="180" height="48" rx="6" fill="#ffffff" stroke="#a78bfa"/>
+  <text x="600" y="435" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">Kafka 投递</text>
+  <rect x="735" y="406" width="180" height="48" rx="6" fill="#ffffff" stroke="#a78bfa"/>
+  <text x="825" y="435" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">批量消费聚合</text>
+  <rect x="960" y="406" width="180" height="48" rx="6" fill="#ffffff" stroke="#a78bfa"/>
+  <text x="1050" y="435" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">UPSERT 日统计</text>
+  <line x1="240" y1="430" x2="277" y2="430" stroke="#475569" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <line x1="465" y1="430" x2="502" y2="430" stroke="#475569" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <line x1="690" y1="430" x2="727" y2="430" stroke="#475569" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <line x1="915" y1="430" x2="952" y2="430" stroke="#475569" stroke-width="1.4" marker-end="url(#arrow)"/>
+</svg>

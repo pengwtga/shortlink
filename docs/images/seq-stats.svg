@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1121 914" width="1121" height="914" role="img" font-family="'Helvetica Neue',Helvetica,Arial,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif">
+<title>3.3 点击统计聚合</title>
+<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/></marker><marker id="arrd" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker></defs>
+<rect x="0" y="0" width="1121" height="914" fill="#ffffff"/>
+<text x="0.0" y="40" font-size="16" font-weight="700" fill="#0f172a">3.3 点击统计聚合</text>
+<g transform="translate(0.0,0)">
+<line x1="99.4" y1="108.0" x2="99.4" y2="894.0" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="5,4"/>
+<line x1="286.3" y1="108.0" x2="286.3" y2="894.0" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="5,4"/>
+<line x1="473.2" y1="108.0" x2="473.2" y2="894.0" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="5,4"/>
+<line x1="660.1" y1="108.0" x2="660.1" y2="894.0" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="5,4"/>
+<line x1="847.0" y1="108.0" x2="847.0" y2="894.0" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="5,4"/>
+<line x1="1033.8" y1="108.0" x2="1033.8" y2="894.0" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="5,4"/>
+<rect x="30.0" y="64.0" width="138.9" height="44" rx="7" fill="#f5f3ff" stroke="#a78bfa"/>
+<text x="99.4" y="90.0" font-size="11" font-weight="600" fill="#6d28d9" text-anchor="middle">Kafka</text>
+<rect x="216.9" y="64.0" width="138.9" height="44" rx="7" fill="#f5f3ff" stroke="#a78bfa"/>
+<text x="286.3" y="90.0" font-size="11" font-weight="600" fill="#6d28d9" text-anchor="middle">ClickStatsConsumer</text>
+<rect x="403.8" y="64.0" width="138.9" height="44" rx="7" fill="#eff6ff" stroke="#60a5fa"/>
+<text x="473.2" y="90.0" font-size="11" font-weight="600" fill="#1d4ed8" text-anchor="middle">StatsService</text>
+<rect x="590.6" y="64.0" width="138.9" height="44" rx="7" fill="#fef2f2" stroke="#fca5a5"/>
+<text x="660.1" y="90.0" font-size="11" font-weight="600" fill="#b91c1c" text-anchor="middle">MySQL</text>
+<rect x="777.5" y="64.0" width="138.9" height="44" rx="7" fill="#ecfdf5" stroke="#34d399"/>
+<text x="847.0" y="90.0" font-size="11" font-weight="600" fill="#047857" text-anchor="middle">StatsController</text>
+<rect x="964.4" y="64.0" width="138.9" height="44" rx="7" fill="#fef2f2" stroke="#fca5a5"/>
+<text x="1033.8" y="90.0" font-size="11" font-weight="600" fill="#b91c1c" text-anchor="middle">Redis</text>
+<rect x="42.0" y="144.0" width="301.8" height="30" rx="4" fill="#fefce8" stroke="#facc15"/>
+<text x="192.9" y="164.0" font-size="11" fill="#854d0e" text-anchor="middle">分区分配时：用 DB 位点 seek，覆盖 Kafka 自身位点</text>
+<line x1="286.3" y1="190.0" x2="651.1" y2="190.0" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle cx="338.2" cy="178.4" r="6.5" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="338.2" y="182.0" font-size="10" fill="#64748b" text-anchor="middle">①</text>
+<text x="351.2" y="182.0" font-size="11.5" fill="#334155" text-anchor="start">SELECT next_offset FROM t_consumer_offset</text>
+<line x1="286.3" y1="226.0" x2="108.4" y2="226.0" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle cx="99.7" cy="214.4" r="6.5" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="99.7" y="218.0" font-size="10" fill="#64748b" text-anchor="middle">②</text>
+<text x="112.7" y="218.0" font-size="11.5" fill="#334155" text-anchor="start">seek(partition, next_offset)</text>
+<line x1="99.4" y1="288.0" x2="277.3" y2="288.0" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle cx="125.5" cy="276.4" r="6.5" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="125.5" y="280.0" font-size="10" fill="#64748b" text-anchor="middle">③</text>
+<text x="138.5" y="280.0" font-size="11.5" fill="#334155" text-anchor="start">List&lt;ConsumerRecord&gt;</text>
+<path d="M 286.3 314.0 h 44 v 20 h -44" fill="none" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<text x="278.3" y="326.0" font-size="11.5" fill="#334155" text-anchor="end">内存聚合 Map&lt;"code|date", count&gt;</text>
+<circle cx="69.8" cy="322.4" r="6.5" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="69.8" y="326.0" font-size="10" fill="#64748b" text-anchor="middle">④</text>
+<path d="M 286.3 360.0 h 44 v 20 h -44" fill="none" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<text x="278.3" y="372.0" font-size="11.5" fill="#334155" text-anchor="end">取每个分区批内最大 offset</text>
+<circle cx="121.7" cy="368.4" r="6.5" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="121.7" y="372.0" font-size="10" fill="#64748b" text-anchor="middle">⑤</text>
+<rect x="228.9" y="416.0" width="488.6" height="30" rx="4" fill="#fefce8" stroke="#facc15"/>
+<text x="473.2" y="436.0" font-size="11" fill="#854d0e" text-anchor="middle">以下两条在同一事务内提交</text>
+<line x1="286.3" y1="462.0" x2="464.2" y2="462.0" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle cx="257.6" cy="450.4" r="6.5" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="257.6" y="454.0" font-size="10" fill="#64748b" text-anchor="middle">⑥</text>
+<text x="270.6" y="454.0" font-size="11.5" fill="#334155" text-anchor="start">persistDailyClicks(code, date, count)</text>
+<line x1="473.2" y1="498.0" x2="651.1" y2="498.0" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle cx="347.9" cy="486.4" r="6.5" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="347.9" y="490.0" font-size="10" fill="#64748b" text-anchor="middle">⑦</text>
+<text x="360.9" y="490.0" font-size="11.5" fill="#334155" text-anchor="start">INSERT ... ON DUPLICATE KEY UPDATE clicks = clicks + VALUES(clicks)</text>
+<line x1="286.3" y1="534.0" x2="651.1" y2="534.0" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle cx="299.5" cy="522.4" r="6.5" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="299.5" y="526.0" font-size="10" fill="#64748b" text-anchor="middle">⑧</text>
+<text x="312.5" y="526.0" font-size="11.5" fill="#334155" text-anchor="start">UPSERT t_consumer_offset(next_offset = maxOffset + 1)</text>
+<rect x="14.0" y="262.0" width="731.5" height="314.0" rx="6" fill="none" stroke="#cbd5e1"/>
+<rect x="22.0" y="253.0" width="195.4" height="18" rx="4" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="29.0" y="266.0" font-size="10.5" fill="#475569" text-anchor="start">loop 批量拉取（默认 ≤ 500 条/批）</text>
+<rect x="42.0" y="582.0" width="301.8" height="30" rx="4" fill="#fefce8" stroke="#facc15"/>
+<text x="192.9" y="602.0" font-size="11" fill="#854d0e" text-anchor="middle">事务提交后容器再提交 Kafka 位点（仅用于监控）</text>
+<rect x="789.5" y="628.0" width="114.9" height="30" rx="4" fill="#fefce8" stroke="#facc15"/>
+<text x="847.0" y="648.0" font-size="11" fill="#854d0e" text-anchor="middle">查询时</text>
+<line x1="847.0" y1="674.0" x2="482.2" y2="674.0" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle cx="612.0" cy="662.4" r="6.5" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="612.0" y="666.0" font-size="10" fill="#64748b" text-anchor="middle">⑨</text>
+<text x="625.0" y="666.0" font-size="11.5" fill="#334155" text-anchor="start">getStats(code)</text>
+<line x1="473.2" y1="710.0" x2="651.1" y2="710.0" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle cx="502.7" cy="698.4" r="6.5" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="502.7" y="702.0" font-size="10" fill="#64748b" text-anchor="middle">⑩</text>
+<text x="515.7" y="702.0" font-size="11.5" fill="#334155" text-anchor="start">SELECT 近 7 天日统计</text>
+<line x1="473.2" y1="746.0" x2="651.1" y2="746.0" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle cx="445.0" cy="734.4" r="6.5" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="445.0" y="738.0" font-size="10" fill="#64748b" text-anchor="middle">⑪</text>
+<text x="458.0" y="738.0" font-size="11.5" fill="#334155" text-anchor="start">SELECT SUM(clicks) 历史总点击（真相源）</text>
+<line x1="473.2" y1="782.0" x2="1024.8" y2="782.0" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle cx="599.2" cy="770.4" r="6.5" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="599.2" y="774.0" font-size="10" fill="#64748b" text-anchor="middle">⑫</text>
+<text x="612.2" y="774.0" font-size="11.5" fill="#334155" text-anchor="start">GET sl:cnt:{code}:{today}, PFCOUNT sl:uv:{code}</text>
+<path d="M 473.2 808.0 h 44 v 20 h -44" fill="none" stroke="#475569" stroke-width="1.4" marker-end="url(#arr)"/>
+<text x="465.2" y="820.0" font-size="11.5" fill="#334155" text-anchor="end">total = mysqlTotal + max(0, redisToday - mysqlToday)</text>
+<circle cx="122.3" cy="816.4" r="6.5" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="122.3" y="820.0" font-size="10" fill="#64748b" text-anchor="middle">⑬</text>
+<line x1="473.2" y1="864.0" x2="838.0" y2="864.0" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="5,3" marker-end="url(#arrd)"/>
+<circle cx="528.3" cy="852.4" r="6.5" fill="#f1f5f9" stroke="#cbd5e1"/>
+<text x="528.3" y="856.0" font-size="10" fill="#64748b" text-anchor="middle">⑭</text>
+<text x="541.3" y="856.0" font-size="11.5" fill="#334155" text-anchor="start">{totalClicks, todayClicks, uv, daily[7]}</text>
+</g>
+</svg>

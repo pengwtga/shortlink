@@ -1,0 +1,24 @@
+# Build
+target/
+build/
+out/
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs & local
+*.log
+.env
+.env.local
+
+# Docker runtime volumes (host dirs mounted into containers)
+data/

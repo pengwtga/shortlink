@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1060 800" width="1060" height="800" role="img"
+     font-family="'Helvetica Neue',Helvetica,Arial,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif">
+  <title>分布式短链平台 · 分层架构</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1060" height="800" fill="#ffffff"/>
+  <text x="20" y="32" font-size="18" font-weight="700" fill="#0f172a">分布式短链平台 · 分层架构</text>
+
+  <!-- ============ 客户端层 ============ -->
+  <rect x="20" y="52" width="980" height="98" rx="10" fill="#eef2ff" stroke="#c7d2fe"/>
+  <text x="36" y="74" font-size="13" font-weight="700" fill="#4338ca">客户端层</text>
+  <rect x="210" y="86" width="280" height="50" rx="8" fill="#ffffff" stroke="#818cf8"/>
+  <text x="350" y="107" font-size="13" font-weight="600" fill="#1e293b" text-anchor="middle">浏览器静态页</text>
+  <text x="350" y="124" font-size="11" fill="#64748b" text-anchor="middle">static/index.html</text>
+  <rect x="530" y="86" width="280" height="50" rx="8" fill="#ffffff" stroke="#818cf8"/>
+  <text x="670" y="107" font-size="13" font-weight="600" fill="#1e293b" text-anchor="middle">curl / 第三方调用方</text>
+  <text x="670" y="124" font-size="11" fill="#64748b" text-anchor="middle">HTTP API</text>
+
+  <!-- 客户端层 -> 应用层 -->
+  <line x1="350" y1="150" x2="350" y2="174" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="670" y1="150" x2="670" y2="174" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="510" y="167" font-size="11" fill="#64748b" text-anchor="middle">HTTP 请求 / 302 跳转</text>
+
+  <!-- ============ 应用层 ============ -->
+  <rect x="20" y="178" width="980" height="312" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="36" y="200" font-size="13" font-weight="700" fill="#334155">应用层（Spring Boot 单实例，可水平扩展）</text>
+
+  <!-- 接入层 -->
+  <rect x="40" y="212" width="960" height="80" rx="8" fill="#ecfdf5" stroke="#a7f3d0"/>
+  <text x="56" y="230" font-size="12" font-weight="700" fill="#047857">接入层 · Spring MVC</text>
+  <rect x="70" y="240" width="280" height="40" rx="6" fill="#ffffff" stroke="#34d399"/>
+  <text x="210" y="257" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">LinkController</text>
+  <text x="210" y="272" font-size="10.5" fill="#64748b" text-anchor="middle">/api/v1/links</text>
+  <rect x="380" y="240" width="280" height="40" rx="6" fill="#ffffff" stroke="#34d399"/>
+  <text x="520" y="257" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">RedirectController</text>
+  <text x="520" y="272" font-size="10.5" fill="#64748b" text-anchor="middle">/{code}</text>
+  <rect x="690" y="240" width="280" height="40" rx="6" fill="#ffffff" stroke="#34d399"/>
+  <text x="830" y="257" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">StatsController</text>
+  <text x="830" y="272" font-size="10.5" fill="#64748b" text-anchor="middle">/api/v1/stats/{code}</text>
+
+  <!-- 领域服务层 -->
+  <rect x="40" y="304" width="960" height="80" rx="8" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="56" y="322" font-size="12" font-weight="700" fill="#1d4ed8">领域服务层</text>
+  <rect x="70" y="332" width="280" height="40" rx="6" fill="#ffffff" stroke="#60a5fa"/>
+  <text x="210" y="349" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">RateLimitService</text>
+  <text x="210" y="364" font-size="10.5" fill="#64748b" text-anchor="middle">Lua 固定窗口限流</text>
+  <rect x="380" y="332" width="280" height="40" rx="6" fill="#ffffff" stroke="#60a5fa"/>
+  <text x="520" y="349" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">LinkService</text>
+  <text x="520" y="364" font-size="10.5" fill="#64748b" text-anchor="middle">发号 / 解析 / 缓存</text>
+  <rect x="690" y="332" width="280" height="40" rx="6" fill="#ffffff" stroke="#60a5fa"/>
+  <text x="830" y="349" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">StatsService</text>
+  <text x="830" y="364" font-size="10.5" fill="#64748b" text-anchor="middle">计数 / 投递 / 查询</text>
+
+  <!-- 基础设施适配 -->
+  <rect x="40" y="396" width="960" height="80" rx="8" fill="#f5f3ff" stroke="#ddd6fe"/>
+  <text x="56" y="414" font-size="12" font-weight="700" fill="#6d28d9">基础设施适配</text>
+  <rect x="70" y="424" width="280" height="40" rx="6" fill="#ffffff" stroke="#a78bfa"/>
+  <text x="210" y="441" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">SnowflakeIdGenerator</text>
+  <text x="210" y="456" font-size="10.5" fill="#64748b" text-anchor="middle">+ Base62 短码</text>
+  <rect x="380" y="424" width="280" height="40" rx="6" fill="#ffffff" stroke="#a78bfa"/>
+  <text x="520" y="441" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">ClickEventProducer</text>
+  <text x="520" y="456" font-size="10.5" fill="#64748b" text-anchor="middle">send，key = code</text>
+  <rect x="690" y="424" width="280" height="40" rx="6" fill="#ffffff" stroke="#a78bfa"/>
+  <text x="830" y="441" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">ClickStatsConsumer</text>
+  <text x="830" y="456" font-size="10.5" fill="#64748b" text-anchor="middle">批量聚合 + 位点同事务</text>
+
+  <!-- 应用层 -> 存储层 -->
+  <line x1="210" y1="490" x2="210" y2="548" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="520" y1="490" x2="520" y2="548" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="830" y1="490" x2="830" y2="548" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="222" y="524" font-size="10.5" fill="#64748b">Redis 协议</text>
+  <text x="532" y="524" font-size="10.5" fill="#64748b">Kafka 协议</text>
+  <text x="842" y="524" font-size="10.5" fill="#64748b">JDBC</text>
+
+  <!-- ============ 存储与中间件层 ============ -->
+  <rect x="20" y="556" width="980" height="114" rx="10" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="36" y="578" font-size="13" font-weight="700" fill="#b91c1c">存储与中间件层</text>
+  <rect x="70" y="590" width="280" height="66" rx="6" fill="#ffffff" stroke="#fca5a5"/>
+  <text x="210" y="611" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">Redis 7</text>
+  <text x="210" y="628" font-size="10.5" fill="#64748b" text-anchor="middle">缓存 · 计数 · UV</text>
+  <text x="210" y="645" font-size="10.5" fill="#64748b" text-anchor="middle">限流 Lua</text>
+  <rect x="380" y="590" width="280" height="66" rx="6" fill="#ffffff" stroke="#fca5a5"/>
+  <text x="520" y="611" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">Kafka 3.9</text>
+  <text x="520" y="628" font-size="10.5" fill="#64748b" text-anchor="middle">shortlink.clicks</text>
+  <text x="520" y="645" font-size="10.5" fill="#64748b" text-anchor="middle">3 分区 · 保留 7 天</text>
+  <rect x="690" y="590" width="280" height="66" rx="6" fill="#ffffff" stroke="#fca5a5"/>
+  <text x="830" y="611" font-size="12.5" font-weight="600" fill="#1e293b" text-anchor="middle">MySQL 8</text>
+  <text x="830" y="628" font-size="10.5" fill="#64748b" text-anchor="middle">t_link · t_link_stats_daily</text>
+  <text x="830" y="645" font-size="10.5" fill="#64748b" text-anchor="middle">t_consumer_offset</text>
+
+  <!-- ============ 核心链路 ============ -->
+  <rect x="20" y="688" width="980" height="92" rx="10" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text font-size="11.5" fill="#475569">
+    <tspan x="36" y="712" font-weight="700" fill="#047857">① 创建</tspan>
+    <tspan x="88" y="712">客户端 → LinkController → 限流 → LinkService（雪花 ID + Base62）→ MySQL 落库 + Redis 写缓存</tspan>
+    <tspan x="36" y="734" font-weight="700" fill="#1d4ed8">② 跳转</tspan>
+    <tspan x="88" y="734">客户端 → RedirectController → 限流 → LinkService 解析 → StatsService 计数 → Redis + Kafka 异步投递</tspan>
+    <tspan x="36" y="756" font-weight="700" fill="#6d28d9">③ 统计</tspan>
+    <tspan x="88" y="756">Kafka → ClickStatsConsumer 批量聚合 → MySQL 日统计；查询时 MySQL 总量 + Redis 实时增量</tspan>
+  </text>
+</svg>
