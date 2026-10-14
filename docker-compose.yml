@@ -3,17 +3,18 @@ services:
     image: mysql:8.0
     container_name: shortlink-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: root_pass
+      # 密码不入库：从项目根目录的 .env 读取（模板见 .env.example）
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请先复制 .env.example 为 .env 并填写}
       MYSQL_DATABASE: shortlink
       MYSQL_USER: shortlink
-      MYSQL_PASSWORD: shortlink_pass
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?请先复制 .env.example 为 .env 并填写}
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     ports:
       - "13306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
-      test: [ "CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot_pass" ]
+      test: [ "CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}" ]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -71,7 +72,7 @@ services:
     environment:
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/shortlink?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
       SPRING_DATASOURCE_USERNAME: shortlink
-      SPRING_DATASOURCE_PASSWORD: shortlink_pass
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD}
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: "6379"
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092

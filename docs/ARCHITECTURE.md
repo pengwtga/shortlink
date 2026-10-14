@@ -863,7 +863,7 @@ docker compose up -d --build          # 一键拉起全部实例
 | 组件 | 地址 |
 |------|------|
 | 应用 + 可视化页面 | http://localhost:8082 |
-| MySQL | `localhost:13306`（root/root_pass，库 `shortlink`） |
+| MySQL | `localhost:13306`（root / 密码见项目根目录 `.env`，库 `shortlink`） |
 | Redis | `localhost:16379` |
 | Kafka | `localhost:19092` |
 
@@ -897,10 +897,10 @@ docker exec -it shortlink-redis redis-cli        # 查 Redis
 #   TTL sl:cnt:mTyOaKbUcr:<日期>      当日计数，应约 48h
 #   TTL sl:uv:mTyOaKbUcr              总 UV，应约 180 天
 #   注意：不应存在 TTL=-1（永不过期）的业务 key，见 4.2 节的两条硬性约束
-docker exec -it shortlink-mysql mysql -uroot -proot_pass shortlink \
+docker exec -it shortlink-mysql mysql -uroot -p shortlink \
   -e "SELECT * FROM t_link_stats_daily;"
 # 消费进度（真相源，看它而不是 Kafka 的 LAG）
-docker exec -it shortlink-mysql mysql -uroot -proot_pass shortlink \
+docker exec -it shortlink-mysql mysql -uroot -p shortlink \
   -e "SELECT partition_no, next_offset FROM t_consumer_offset ORDER BY partition_no;"
 # Kafka 消费组状态
 docker exec -it shortlink-kafka /opt/kafka/bin/kafka-consumer-groups.sh \

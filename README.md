@@ -16,6 +16,7 @@ Spring Boot 3.4 + Java 21 + MySQL + Redis + Kafka + Docker
 
 ```bash
 cd shortlink
+cp .env.example .env   # 填入本地密码（.env 不入库）
 docker compose up -d --build
 ```
 
@@ -48,9 +49,10 @@ curl http://localhost:8082/api/v1/stats/{code}
 
 ## 本地开发（不用 Docker）
 
-本地启动 MySQL/Redis/Kafka 后：
+本地启动 MySQL/Redis/Kafka 后（数据源密码通过 `DB_PASSWORD` 环境变量传入）：
 
 ```bash
+export DB_PASSWORD=你的密码
 mvn spring-boot:run
 ```
 
