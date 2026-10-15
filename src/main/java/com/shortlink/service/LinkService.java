@@ -5,6 +5,7 @@ import com.shortlink.dto.LinkResponse;
 import com.shortlink.entity.Link;
 import com.shortlink.id.Base62;
 import com.shortlink.id.SnowflakeIdGenerator;
+import com.shortlink.metrics.ShortlinkMetrics;
 import com.shortlink.repository.LinkRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -34,17 +35,20 @@ public class LinkService {
     private final LinkRepository linkRepository;
     private final StringRedisTemplate redis;
     private final SnowflakeIdGenerator idGenerator;
+    private final ShortlinkMetrics metrics;
     private final String baseUrl;
     private final long cacheTtlHours;
 
     public LinkService(LinkRepository linkRepository,
                        StringRedisTemplate redis,
                        SnowflakeIdGenerator idGenerator,
+                       ShortlinkMetrics metrics,
                        @Value("${shortlink.base-url}") String baseUrl,
                        @Value("${shortlink.cache.ttl-hours}") long cacheTtlHours) {
         this.linkRepository = linkRepository;
         this.redis = redis;
         this.idGenerator = idGenerator;
+        this.metrics = metrics;
         this.baseUrl = baseUrl;
         this.cacheTtlHours = cacheTtlHours;
     }
@@ -75,28 +79,42 @@ public class LinkService {
         return new LinkResponse(code, baseUrl + "/" + code, longUrl, request.expireAt());
     }
 
-    /** 解析短码对应的长链接；不存在抛 404，已过期/禁用抛 410 */
+    /**
+     * 解析短码对应的长链接；不存在抛 404，已过期/禁用抛 410。
+     *
+     * <p>每个分支都会记录一次 outcome 指标。语义上是<b>互斥的最终结果</b>：
+     * 命中缓存但已过期只计 {@code expired}，不重复计 {@code hit}，
+     * 这样 {@code sum(shortlink_redirect_total)} 就等于跳转请求总数。
+     */
     public String resolve(String code) {
         String key = cacheKey(code);
         String cached = redis.opsForValue().get(key);
+        String outcome;
 
         if (cached == null) {
             Link link = linkRepository.findByCode(code).orElse(null);
             if (link == null || link.getStatus() == 0) {
                 redis.opsForValue().set(key, NULL_PLACEHOLDER, Duration.ofMinutes(5));
+                metrics.redirectOutcome(ShortlinkMetrics.OUTCOME_NOT_FOUND);
                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "短链不存在: " + code);
             }
             cached = toCacheValue(link.getLongUrl(), link.getExpireAt());
             redis.opsForValue().set(key, cached, Duration.ofHours(cacheTtlHours));
+            outcome = ShortlinkMetrics.OUTCOME_MISS;
         } else if (NULL_PLACEHOLDER.equals(cached)) {
+            metrics.redirectOutcome(ShortlinkMetrics.OUTCOME_NULL_PLACEHOLDER);
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "短链不存在: " + code);
+        } else {
+            outcome = ShortlinkMetrics.OUTCOME_HIT;
         }
 
         String[] parts = cached.split("\\|", 2);
         long expireMillis = Long.parseLong(parts[0]);
         if (expireMillis > 0 && expireMillis < System.currentTimeMillis()) {
+            metrics.redirectOutcome(ShortlinkMetrics.OUTCOME_EXPIRED);
             throw new ResponseStatusException(HttpStatus.GONE, "短链已过期: " + code);
         }
+        metrics.redirectOutcome(outcome);
         return parts[1];
     }
 

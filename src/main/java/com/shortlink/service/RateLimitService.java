@@ -1,5 +1,6 @@
 package com.shortlink.service;
 
+import com.shortlink.metrics.ShortlinkMetrics;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.http.HttpStatus;
@@ -30,9 +31,11 @@ public class RateLimitService {
             Long.class);
 
     private final StringRedisTemplate redis;
+    private final ShortlinkMetrics metrics;
 
-    public RateLimitService(StringRedisTemplate redis) {
+    public RateLimitService(StringRedisTemplate redis, ShortlinkMetrics metrics) {
         this.redis = redis;
+        this.metrics = metrics;
     }
 
     /**
@@ -48,6 +51,7 @@ public class RateLimitService {
                 String.valueOf(windowSeconds),
                 String.valueOf(limit));
         if (allowed == null || allowed == 0L) {
+            metrics.rateLimitRejected(scene);
             throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,
                     "请求过于频繁，请稍后再试（限流: " + limit + " 次/" + windowSeconds + "s）");
         }

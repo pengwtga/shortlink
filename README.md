@@ -40,6 +40,19 @@ curl -i http://localhost:8082/{code}
 curl http://localhost:8082/api/v1/stats/{code}
 ```
 
+## 监控指标
+
+Prometheus 抓取端点 `GET /actuator/prometheus`（含 JVM / Tomcat / HikariCP / HTTP 指标）：
+
+```bash
+curl -s http://localhost:8082/actuator/prometheus | grep '^shortlink_'
+# shortlink_redirect_total{outcome="hit"}            跳转结果（hit/miss/null_placeholder/not_found/expired，互斥）
+# shortlink_ratelimit_rejected_total{scene="redirect"} 被限流拒绝数
+# shortlink_consume_lag{partition="0"}               消费滞后，基于 DB 位点而非 Kafka LAG
+```
+
+指标清单与接入方式见 [docs/ARCHITECTURE.md §9.4](docs/ARCHITECTURE.md#94-可观测性指标出口)。
+
 ## 架构要点
 
 - 发号器：Snowflake（41bit 时间戳 + 10bit 机器号 + 12bit 序列），多实例部署时用 SHORTLINK_WORKER_ID 区分机器号

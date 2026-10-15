@@ -6,12 +6,16 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.List;
 import java.util.Optional;
 
 public interface ConsumerOffsetRepository extends JpaRepository<ConsumerOffset, Long> {
 
     /** 分区分配时用来自 DB 的位点 seek，覆盖 Kafka 自身的已提交位点 */
     Optional<ConsumerOffset> findByGroupIdAndTopicAndPartitionNo(String groupId, String topic, int partitionNo);
+
+    /** 计算消费滞后指标时，一次性取出某 topic 全部分区的位点 */
+    List<ConsumerOffset> findByGroupIdAndTopic(String groupId, String topic);
 
     /**
      * 推进位点。必须与业务数据写入处于同一事务：

@@ -913,6 +913,55 @@ docker exec -it shortlink-kafka /opt/kafka/bin/kafka-consumer-groups.sh \
 docker compose start app
 ```
 
+### 9.4 可观测性（指标出口）
+
+Prometheus 抓取端点：`GET /actuator/prometheus`（Actuator + Micrometer）。
+
+```bash
+curl -s http://localhost:8082/actuator/prometheus | grep '^shortlink_'
+```
+
+**业务指标**（本项目自定义，供智能运维告警与根因推断）：
+
+| 指标 | 类型 | 语义 |
+|------|------|------|
+| `shortlink_redirect_total{outcome}` | Counter | 跳转最终结果，outcome ∈ `hit` / `miss` / `null_placeholder` / `not_found` / `expired`，**互斥**，故 `sum()` 等于跳转请求总数 |
+| `shortlink_ratelimit_rejected_total{scene}` | Counter | 被限流拒绝的请求数，scene ∈ `create` / `redirect` |
+| `shortlink_consume_lag{partition}` | Gauge | 消费滞后 = Kafka log-end offset − `t_consumer_offset.next_offset` |
+
+`outcome` 的互斥性是刻意设计的：命中缓存但已过期只计 `expired`，不重复计 `hit`。这样缓存命中率可直接算：
+
+```promql
+sum(rate(shortlink_redirect_total{outcome="hit"}[5m]))
+  / sum(rate(shortlink_redirect_total[5m]))
+```
+
+**为什么 `shortlink_consume_lag` 不直接取 Kafka 的 LAG**：本项目的消费进度以 MySQL 的 `t_consumer_offset` 为真相源，Kafka 侧位点会滞后再提交，且空闲分区存在「假 lag」（见 [6.5](#65-投递语义与幂等)）。直接用 Kafka LAG 做告警会引发误报风暴。该指标每 30s 刷新一次（`shortlink.metrics.lag-refresh-millis`）。
+
+**框架自带指标**（无需额外代码，AIOps 侧直接可用）：
+
+| 指标 | 用途 |
+|------|------|
+| `tomcat_threads_busy_threads` / `tomcat_threads_config_max_threads` | Tomcat 线程池饱和度。**压测实测并发 180+ 触发连接重置，线程上限 200 是直接信号** |
+| `tomcat_connections_current_connections` | 当前连接数 |
+| `hikaricp_connections_pending` / `hikaricp_connections_timeout_total` | 数据库连接池排队与超时 |
+| `http_server_requests_seconds_*` | 各接口的 QPS / 延迟 / 错误率（按 uri + status 维度） |
+| `jvm_memory_used_bytes` / `jvm_gc_pause_seconds_*` | 堆使用与 GC 停顿（堆上限 512m，压测时非堆另占约 200m） |
+| `process_cpu_usage` / `system_cpu_usage` | 进程与系统 CPU |
+
+> Tomcat 线程池与连接数指标依赖 `server.tomcat.mbeanregistry.enabled=true`（已开启）。Spring Boot 默认关闭该 MBean 注册以省内存，但这两个指标是连接被打满时唯一的一手信号。
+
+**接入 Prometheus**（AIOps 侧 `prometheus.yml`）：
+
+```yaml
+scrape_configs:
+  - job_name: shortlink-app
+    metrics_path: /actuator/prometheus
+    scrape_interval: 15s
+    static_configs:
+      - targets: [ 'host.docker.internal:8082' ]   # 容器内访问宿主机端口
+```
+
 ---
 
 ## 附：关键类索引
@@ -929,6 +978,8 @@ docker compose start app
 | Kafka | `ClickStatsConsumer` | 批量消费 + 内存聚合 + 位点同事务落库（`ConsumerSeekAware`） |
 | Config | `KafkaTopicConfig` | Topic 声明（3 分区 / 保留 7 天） |
 | Entity/Repo | `ConsumerOffset` + `ConsumerOffsetRepository` | 消费位点持久化与原子推进 |
+| Metrics | `ShortlinkMetrics` | 跳转结果与限流拒绝计数（业务指标出口） |
+| Metrics | `ConsumerLagMetrics` | 基于 DB 位点计算消费滞后，定时刷新为 Gauge |
 | ID | `SnowflakeIdGenerator` | 雪花 ID 发号 |
 | ID | `Base62` | 短码编解码 |
 | 资源 | `static/index.html` | 可视化操作页（创建 + 统计） |

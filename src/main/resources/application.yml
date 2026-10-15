@@ -1,5 +1,11 @@
 server:
   port: 8080
+  tomcat:
+    # 注册 Tomcat 的 MBean，让线程池 / 连接数指标（tomcat_threads_*、tomcat_connections_*）
+    # 能被 Micrometer 采集。默认关闭是为省内存，但这两个指标是「高并发下连接被重置」
+    # 故障的直接信号（实测并发 180+ 触发），对 AIOps 告警不可缺。
+    mbeanregistry:
+      enabled: true
 
 spring:
   application:
@@ -47,6 +53,23 @@ shortlink:
     create-window-seconds: 60
     redirect-limit: 120
     redirect-window-seconds: 60
+  metrics:
+    # 消费滞后指标的刷新间隔（毫秒）。该指标会查一次 Kafka log-end offset，
+    # 30s 足够且不会给 broker 造成压力。
+    lag-refresh-millis: 30000
+
+# 指标暴露：Prometheus 抓 /actuator/prometheus
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: shortlink
 
 logging:
   level:
