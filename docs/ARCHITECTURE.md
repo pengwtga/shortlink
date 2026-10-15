@@ -962,6 +962,8 @@ scrape_configs:
       - targets: [ 'host.docker.internal:8082' ]   # 容器内访问宿主机端口
 ```
 
+接入 AIOps 平台（Prometheus 抓取作业、告警规则、根因分析拓扑与故障模式库）的完整实施记录见 [AIOPS_INTEGRATION.md](AIOPS_INTEGRATION.md)。
+
 ---
 
 ## 附：关键类索引

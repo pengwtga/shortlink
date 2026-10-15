@@ -51,7 +51,7 @@ curl -s http://localhost:8082/actuator/prometheus | grep '^shortlink_'
 # shortlink_consume_lag{partition="0"}               消费滞后，基于 DB 位点而非 Kafka LAG
 ```
 
-指标清单与接入方式见 [docs/ARCHITECTURE.md §9.4](docs/ARCHITECTURE.md#94-可观测性指标出口)。
+指标清单与接入方式见 [docs/ARCHITECTURE.md §9.4](docs/ARCHITECTURE.md#94-可观测性指标出口)；AIOps 平台侧的接入与实施记录见 [docs/AIOPS_INTEGRATION.md](docs/AIOPS_INTEGRATION.md)。
 
 ## 架构要点
 
