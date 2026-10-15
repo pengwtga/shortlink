@@ -13,10 +13,11 @@
 | 1（短链侧）| Actuator + 业务指标 | — | `shortlink_redirect_total`、`shortlink_consume_lag` 等 |
 | 2 | Prometheus scrape job | `9f35d31` | AIOps Prometheus 开始抓 `host.docker.internal:8082` |
 | 3 | 真实采集 + 双层告警 | `6f7d6a4` | `collectors/` + `MonitorAgent` 双层路径 |
+| 4 | RCA 换短链拓扑与故障模式库 | `6052b9f` | 根因判定由证据驱动（PromQL 探针） |
 | fix | `IncidentState.metadata` 字段 | `293c516` | 修复上游 metadata 通道不可用的硬 bug |
 | chore | `.gitignore` | `dcc08a0` | 排除构建产物 / IDE / OS 杂项 |
 
-四个 commit 已推送到 fork：`git@github.com:pengwtga/multi-agent-aiops.git`；`upstream` 仍指向 `bcefghj/multi-agent-aiops`，便于后续同步上游。
+五个 commit 已推送到 fork：`git@github.com:pengwtga/multi-agent-aiops.git`；`upstream` 仍指向 `bcefghj/multi-agent-aiops`，便于后续同步上游。
 
 ---
 
@@ -125,6 +126,66 @@ Orchestrator  Workflow completed: status=resolved
 
 ---
 
+## 阶段 4：RCA 换短链拓扑与故障模式库（commit `6052b9f`）
+
+### 4.1 动机
+
+阶段 3 的验证暴露了一处**逻辑错误**：注入 Redis 故障后，RCA 报的根因是「上游服务请求量激增导致 CPU 过载」，与事实（Redis 不可达）完全不符。根因有两层：
+
+- `MOCK_SERVICE_TOPOLOGY` 里根本没有 `shortlink-app`，服务不存在 → `affected_services` 退化成单节点
+- `redirect_5xx_rate` 不匹配任何 `FAULT_PATTERNS` 的键 → 回落到默认的 `high_cpu_usage` 候选
+
+但**换掉常量表只解决了一半问题**。原实现里，似然 `P(Evidence|Cause)` 是由 `evidence_pattern` 静态拍定的，`base_probability` 先验因此直接决定结论——也就是说它只会回答「哪类故障最常见」，而不是「这次到底是谁」。
+
+### 4.2 改动
+
+| 项 | 改动 |
+|----|------|
+| 拓扑 | `MOCK_SERVICE_TOPOLOGY` → `SHORTLINK_TOPOLOGY`：shortlink-app / click-consumer / mysql / redis / kafka。`runs_on` 用 docker 容器名（非 K8s Pod），供阶段 5 执行器直接消费。消费端独立建模：只依赖 kafka + mysql，与 app 的依赖链区分开 |
+| 故障模式库 | 7 类告警的短链专属候选；未命中时用短链语义的兜底候选，**不再回落原项目的通用 CPU 候选** |
+| 证据探针 | 候选根因带 `verify`（PromQL）。实测成立 → 似然 0.9；不成立 → 0.05；探针无数据 → 0.5 |
+| 推理 | `_bayesian_inference` 改 async（`verify` 需回查 Prometheus）；`Orchestrator` / `api/main.py` 注入 `PrometheusClient` |
+
+### 4.3 关键设计：先验决定「谁更常见」，证据决定「这次是谁」
+
+以 `redirect_5xx_rate` 为例，四个候选靠探针互相证伪：
+
+| 候选根因 | 先验 | 探针（判据） | Redis 真挂时 |
+|----------|------|--------------|--------------|
+| Redis 不可达 | 0.45 | `rate(shortlink_redirect_total[2m]) < 0.05`（成功跳转吞吐归零） | 成立 → 0.81 ← 胜出 |
+| MySQL 不可达 | 0.25 | `rate(hikaricp_connections_timeout_total[2m]) > 0` | 不成立 → 0.025 |
+| 流量激增 | 0.20 | `rate(http_server_requests_seconds_count[2m]) > 20` | 不成立 → 0.02 |
+| 近期部署缺陷 | 0.10 | 无探针（无法用指标证伪，只能靠变更记录） | 0.10 |
+
+「成功跳转吞吐归零」这个判据之所以有效，是因为告警本身（5xx rate > 0.5/s）已经保证了**有流量在打**，此时成功数为 0 就只能是依赖挂了，而不是没人访问。
+
+### 4.4 过程中修掉的一个探针设计缺陷
+
+MySQL 候选最初用「命中请求仍成功」作判据。**这个判据在健康状态下同样成立**，等于无法证伪——会导致系统在正常状态下被误判为 MySQL 故障。已改用 HikariCP 连接获取超时这个一手信号。
+
+### 4.5 验证
+
+`python/tests/test_rca_shortlink.py` 用桩证据提供者注入探针实测值，**不依赖 Docker 与 Prometheus**，可离线运行：
+
+```bash
+cd python && PYTHONPATH=. python tests/test_rca_shortlink.py
+```
+
+| 场景 | 注入的探针值 | 期望 | 结果 |
+|------|--------------|------|------|
+| Redis 不可达 | 成功吞吐 0、DB 超时 0、总请求 8 | 判 Redis | 置信度 0.81 ✓ |
+| MySQL 不可达 | 成功吞吐 4、DB 超时 2 | 判 MySQL | 0.45 ✓ |
+| 流量激增 | 成功吞吐 30、总请求 60 | 判流量 | 0.36 ✓ |
+| 健康状态误报 | 成功吞吐 5、DB 超时 0、总请求 3 | 低置信度、不硬编错因 | 0.10 ✓ |
+| Tomcat 线程池打满 | 线程占用率 0.85 | 判线程池（`anomaly_` 前缀剥离生效） | ✓ |
+| 依赖链 | — | 取自短链拓扑 | ✓ |
+
+其中「健康状态误报」是特地设计的负例：当证据把所有已知根因都证伪时，系统应保持**低置信度**而不是硬编一个错因——这是证据驱动相对先验驱动的关键收益。
+
+> **未完成的验证**：端到端故障注入（真实 `docker stop shortlink-redis` + RCA 回查真实 Prometheus）尚未执行——验证期间 Docker 守护进程故障，而 shortlink 应用与 AIOps Prometheus 均运行在容器内。上述验证覆盖的是判定逻辑，探针的 PromQL 在真实 Prometheus 上的返回值仍需在环境恢复后确认。
+
+---
+
 ## 补充改动
 
 ### metadata 字段修复（commit `293c516`）
@@ -151,16 +212,20 @@ Orchestrator  Workflow completed: status=resolved
 
 ---
 
-## 遗留问题 → 阶段 4 / 5
+## 遗留问题 → 阶段 5
 
-本次验证暴露了两处**逻辑错误**，都不是 bug 而是设计缺口，正是后续阶段要修的核心：
+阶段 3 验证暴露的两处**逻辑错误**（都不是 bug 而是设计缺口），RCA 那处已在阶段 4 修复，剩下 Heal 的执行问题：
 
-| 问题 | 现象 | 根因 | 归属 |
+| 问题 | 现象 | 根因 | 状态 |
 |------|------|------|------|
-| RCA 根因判错 | Redis 挂掉导致的 5xx，报「上游服务请求量激增导致 CPU 过载」 | `MOCK_SERVICE_TOPOLOGY` 无 `shortlink-app`；`redirect_5xx_rate` 不匹配任何 `FAULT_PATTERNS` 键，回落默认 `high_cpu_usage` 候选 | 阶段 4：换短链真实拓扑 + 故障模式库 |
-| Heal 动作既不真也不对 | 执行 `kubectl annotate svc/shortlink-app rate-limit=100 -n production`——短链是 docker compose 部署，没有 k8s；且根因若是 Redis 不可达，该拉起 Redis 而非限流 | playbook 全为 k8s 命令，执行是假的（直接 return SUCCESS） | 阶段 5：换 docker 执行器 + 真实动作映射 |
+| RCA 根因判错 | Redis 挂掉导致的 5xx，报「上游服务请求量激增导致 CPU 过载」 | `MOCK_SERVICE_TOPOLOGY` 无 `shortlink-app`；`redirect_5xx_rate` 不匹配任何 `FAULT_PATTERNS` 键 | ✅ 阶段 4 已修复 |
+| Heal 动作既不真也不对 | 执行 `kubectl annotate svc/shortlink-app rate-limit=100 -n production`——短链是 docker compose 部署，没有 k8s；且根因若是 Redis 不可达，该拉起 Redis 而非限流 | playbook 全为 k8s 命令，执行是假的（直接 return SUCCESS） | ⏳ 阶段 5：换 docker 执行器 + 真实动作映射 |
 
-阶段 4 的故障模式库可直接搬运 [ARCHITECTURE.md §6.5](ARCHITECTURE.md#65-投递语义与幂等) 已沉淀的运维知识（假 lag、无 TTL key、c=180 连接重置、堆 512m 偏小等）；阶段 5 需注意短链 compose 写死了 `container_name`（`shortlink-app` 等），以及水平扩容时雪花 ID 的 `SHORTLINK_WORKER_ID` 必须每实例唯一，否则发号碰撞——因此 `scale_app` 应标 L2 人工，不让 Agent 自动扩。
+### 一个预期内的中间状态
+
+阶段 4 之后，RCA 会输出 `restart_redis` / `restart_mysql` / `check_dependency` / `restart_consumer` 等短链专属动作，而这些在 HealAgent 的 k8s playbook 里并不存在。此时 HealAgent 会**优雅降级**：记 `No playbook for action` 并跳过，不崩溃——表现为「根因判对了，但没有自愈动作」。这正是阶段 5 要补的部分：用 docker 执行器（`docker start shortlink-redis` 等）替换 k8s playbook。
+
+阶段 5 需注意两点：短链 compose 写死了 `container_name`（`shortlink-app` 等）；以及水平扩容时雪花 ID 的 `SHORTLINK_WORKER_ID` 必须每实例唯一，否则发号碰撞——因此 `scale_app` 应标 L2 人工，不让 Agent 自动扩。
 
 ---
 
@@ -171,8 +236,11 @@ Orchestrator  Workflow completed: status=resolved
 | `python/config/prometheus.yml` | 修改 | +16 |
 | `python/collectors/__init__.py` | 新增 | 1 行 |
 | `python/collectors/prometheus_collector.py` | 新增 | ~250 行 |
-| `python/agents/monitor_agent.py` | 修改 | +74 / -23 |
-| `python/api/main.py` | 修改 | +47 / -1 |
+| `python/agents/monitor_agent.py` | 修改 | +74 / -23（阶段 3） |
+| `python/agents/rca_agent.py` | 修改 | 拓扑 + 故障模式库 + 证据探针重写（阶段 4） |
+| `python/core/orchestrator.py` | 修改 | +3（注入 `evidence_provider`） |
+| `python/api/main.py` | 修改 | +47 / -1（阶段 3）、+3（阶段 4 注入） |
 | `python/config/settings.py` | 修改 | +1 |
 | `python/models/events.py` | 修改 | +3 |
+| `python/tests/test_rca_shortlink.py` | 新增 | ~120 行（6 场景离线验证） |
 | `.gitignore` | 新增 | 12 行 |
