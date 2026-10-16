@@ -392,6 +392,7 @@ dry-run 模拟 → 爆炸半径 < 20%？→ 熔断器开着？→ 审批通过�
 | 监控循环的事件不进 `incident_history` | `/api/v1/incidents` 返回 0 条，自愈做了什么只能翻日志 | MonitorLoop 每轮跑完把 incident 回写到 `incident_history` | ⏳ 未实施 |
 | 爆炸半径是硬编码常量 | README 说是「受影响 Pod 数 / 总 Pod 数」，实际是 playbook 里的固定值（详见 §5.7） | 从 `docker ps` / K8s 副本数动态计算 | ⏳ 未实施 |
 | L2 的示例动作不存在 | README 说 L2 是「数据库操作、全量回滚」，playbook 里没有这些动作（详见 §5.7） | 按 README 的描述补齐对应 playbook | ⏳ 未实施 |
+| AIOps fork 的 README 与实现不符 | fork README 仍写「L0 限流（爆炸半径<5%）」「L2 数据库操作、全量回滚」，但我们已把限流/扩容降到 L2 且 argv_template=None，爆炸半径仍是硬编码常量 | 更新 fork README 的「分级自愈 + 安全护栏」段，使其与实际实现（阶段 5 后）一致 | ⏳ 未实施（用户同意先放着） |
 
 ### 阶段 5 实施时的两个注意点
 
