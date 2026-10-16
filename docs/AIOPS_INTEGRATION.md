@@ -15,10 +15,11 @@
 | 3 | 真实采集 + 双层告警 | `6f7d6a4` | `collectors/` + `MonitorAgent` 双层路径 |
 | 4 | RCA 换短链拓扑与故障模式库 | `6052b9f` `cde5327` | 根因判定由证据驱动（PromQL 探针） |
 | 5 | Heal 换真实 docker 执行器 | `1e8d8dd` | 真实自愈闭环（告警 → 重启 Redis → 验证恢复） |
+| 5 修 | 自愈拆提议/执行两段 | `dd79d05` | 审批成为真正的闸门（详见 §5.6） |
 | fix | `IncidentState.metadata` 字段 | `293c516` | 修复上游 metadata 通道不可用的硬 bug |
 | chore | `.gitignore` | `dcc08a0` | 排除构建产物 / IDE / OS 杂项 |
 
-七个 commit 已推送到 fork：`git@github.com:pengwtga/multi-agent-aiops.git`；`upstream` 仍指向 `bcefghj/multi-agent-aiops`，便于后续同步上游。
+八个 commit 已推送到 fork：`git@github.com:pengwtga/multi-agent-aiops.git`；`upstream` 仍指向 `bcefghj/multi-agent-aiops`，便于后续同步上游。
 
 ---
 
@@ -288,7 +289,62 @@ L2 里有一类是**短链应用根本没有对应机制**的：`rate_limit`（�
 
 后果：**L1/L2 动作的审批形同橡皮图章**。它并不阻止执行，只是在执行后补一条审计记录；而 L1 动作当前本来就不会执行（只有 L0 会执行），于是出现了「审批通过但没有执行」的怪状态。
 
-要真正让审批成为闸门，需要把 Heal 拆成「提议」与「执行」两段：`heal_propose`（产出 HealEvent，永不执行）→ `change`（审批）→ `heal_execute`（仅在审批通过后执行）。此项尚未实施。
+要真正让审批成为闸门，需要把 Heal 拆成「提议」与「执行」两段：`heal_propose`（产出 HealEvent，永不执行）→ `change`（审批）→ `heal_execute`（仅在审批通过后执行）。
+
+### 5.6 阶段 5 修复：审批成为真正的闸门（commit `dd79d05`）
+
+按 §5.5 的方案改：
+
+- `HealAgent` 拆成 `HealProposeAgent`（只提议，永不执行）与 `HealExecuteAgent`（仅审批通过 + L0 才执行）
+- DAG 改为 `monitor → rca → heal_propose → change → heal_execute`；`heal_execute` 的入边条件是「已有审批且通过」，未通过则节点 SKIPPED
+- 执行 Agent 内部还会**再校验一次**审批状态与级别 —— 即使有人改了图，也绕不过闸门
+- 提议与执行共享同一个 `CircuitBreaker`：否则两边各记一套失败计数，状态不一致
+- 待执行的 argv 随 `HealEvent.action_params` 流转，执行阶段直接用，不重新推导（可审计）
+- 事件流分开：提议发 `aiops.events`，只有真正要执行的命令才发 `aiops.commands`
+- `ChangeAgent` 去掉「审批通过即 `resolved`」，改为 `approved`；`resolved` 只在执行成功并通过执行后验证后才置。新增 `awaiting_human` / `heal_failed` 状态，区分「等人工」与「执行失败」
+
+端到端验证：
+
+```
+15:34:00.227 [HealProposeAgent] 提议: restart_redis [L0] blast_radius=0.25
+15:34:00.227 [ChangeAgent]     APPROVED: restart_redis risk=0.258          ← 审批在执行之前
+15:34:06.015 [HealExecuteAgent] 执行结果: SUCCESS | 执行后验证: 已恢复 (health=healthy)
+15:34:06.015 Workflow completed: status=resolved                          ← 真修复才 resolved
+```
+
+测试 18/18（新增 8 条审批闸门用例：提议绝不执行、未审批不执行、审批被拒不执行、L1 审批通过也不自动执行、无命令动作不执行、审批通过+L0 才执行、执行失败不置 resolved、dry_run 不执行）。
+
+### 5.7 README 的「分级自愈 + 安全护栏」与原实现的逐条核对
+
+README 第 348-357 行原文：
+
+```
+L0（全自动）：重启 Pod、扩容、限流  ← 爆炸半径 < 5%，直接执行
+L1（半自动）：回滚版本、改配置      ← 需要 oncall 确认
+L2（人工介入）：数据库操作、全量回滚 ← 需要 TL 审批
+
+安全护栏链：
+dry-run 模拟 → 爆炸半径 < 20%？→ 熔断器开着？→ 审批通过？→ 执行
+```
+
+把每一句当成「待证明的命题」，对照改动前的实现（`cde5327`）核一遍：
+
+| README 说的 | 原实现 | 阶段 5 后 |
+|---|---|---|
+| L0 / L1 / L2 三级分级 | `playbook["level"]` 写死的静态字段，`restart_pod`/`scale_up`/`rate_limit` L0，`rollback`/`rollback_config` L1，`heap_dump` L2 | 沿用同一机制（短链动作改用自己的 playbook） |
+| L2：数据库操作、全量回滚 | **这两个动作在 playbook 里根本不存在**；唯一标 L2 的是 `heap_dump` | 沿用这一缺口（待补） |
+| L0 限流「爆炸半径 < 5%」 | **没有这个判定**。`circuit_breaker` 标 L0 但 `blast_radius_factor = 0.08 > 5%` | 未改（仍为静态级别） |
+| 爆炸半径 = 受影响 Pod 数 / 总 Pod 数 | 是 playbook 里硬编码的常量，没从副本数算过 | 未改（`blast_radius_max_percent` 从 0.2 放宽到 0.5） |
+| dry-run 模拟 | `_execute_dry_run` 只做字符串 `format()`，恒返回 `"DRY-RUN OK: command validated"`；且 `if playbook_level == L0_AUTO and self._dry_run:` 意味着 `dry_run=True` 才执行（语义反了） | ✅ 改为「True = 不执行」，校验走 DockerExecutor 的真实白名单 |
+| 熔断器开着？ | 有 `allow_request()` 检查，但 `record_failure` 只在不返回 SUCCESS 时调用 —— 而 `_execute_remediation` 恒返回 `SUCCESS: ...`，**熔断器永远打不开** | ✅ Execute 阶段真记失败/成功，熔断器会真熔断 |
+| 审批通过？→ 执行 | **顺序反了**：DAG 是 `monitor → rca → heal → change`，Heal 先执行、Change 后补审计 | ✅ 拆 `heal_propose` / `heal_execute`，审批夹中间 |
+| 第 97-99 行叙事「第 6 步：执行回滚，5 分钟内恢复正常」 | 永不执行 L1/L2（只有 L0 走 `_execute_remediation`），且 `ChangeAgent` 审批通过后直接 `state.status = "resolved"`，**没有任何执行动作发生** | ✅ L1/L2 都不自动执行；`resolved` 只在 L0 + 审批通过 + 执行成功后才置 |
+
+最后两行是这个核对里最要命的：原实现的 `state.status` 在「ChangeAgent 审批通过」那一刻就被标为 `resolved`，而那时**任何 docker / kubectl 都没跑过**。Demo 输出里看到的「已解决」是审批动作写上去的，不是执行成功的结果。
+
+**还有两处没改，知道但刻意先不动**：
+- 爆炸半径仍是常量，没有从 `docker ps` / K8s 副本数算；这对单实例的短链短链 compose 够用
+- `dry_run` 现在的「校验」是真实白名单校验，没有更深入的「无副作用试跑」（如 `docker inspect` 检查容器存在、目标容器已存在等）
 
 ---
 
@@ -320,20 +376,22 @@ L2 里有一类是**短链应用根本没有对应机制**的：`rate_limit`（�
 
 ## 遗留问题（阶段 5 之后）
 
-阶段 3 验证暴露的两处**逻辑错误**（都不是 bug 而是设计缺口）已全部修复：
+阶段 3~5 验证暴露的**逻辑错误**（都不是 bug 而是设计缺口）已全部修复：
 
 | 问题 | 现象 | 根因 | 状态 |
 |------|------|------|------|
 | RCA 根因判错 | Redis 挂掉导致的 5xx，报「上游服务请求量激增导致 CPU 过载」 | `MOCK_SERVICE_TOPOLOGY` 无 `shortlink-app`；`redirect_5xx_rate` 不匹配任何 `FAULT_PATTERNS` 键 | ✅ 阶段 4 已修复 |
 | Heal 动作既不真也不对 | 执行 `kubectl annotate ...`，短链无 K8s，且限流对 Redis 故障无效 | playbook 全为 K8s 命令，执行是假的（直接 return SUCCESS） | ✅ 阶段 5 已修复 |
+| 审批不是闸门而是橡皮图章 | ChangeAgent 审批晚于 Heal 执行，且审批通过即置 `resolved` 而实际未执行 | DAG 顺序 heal → change；`ChangeAgent` 里 `approved` 直接写 `resolved` | ✅ 已修复（§5.6，commit `dd79d05`） |
 
 ### 仍待处理（均为验证中发现、尚未实施）
 
 | 问题 | 影响 | 建议 | 状态 |
 |------|------|------|------|
 | 依赖「挂起」检测不到 | 请求挂住不产生 5xx，`redirect_5xx_rate` 完全失效（详见 §4.7）；而挂起比快速失败更危险——线程慢慢占满却不产生任何信号 | 补延迟 p99 或「成功吞吐骤降」类规则 | ⏳ 未实施 |
-| 审批发生在执行之后 | ChangeAgent 审批晚于 Heal 执行，L1/L2 的审批不成为闸门，出现「审批通过但没有执行」（详见 §5.5） | Heal 拆成 propose / execute 两段，审批插在中间 | ⏳ 未实施 |
 | 监控循环的事件不进 `incident_history` | `/api/v1/incidents` 返回 0 条，自愈做了什么只能翻日志 | MonitorLoop 每轮跑完把 incident 回写到 `incident_history` | ⏳ 未实施 |
+| 爆炸半径是硬编码常量 | README 说是「受影响 Pod 数 / 总 Pod 数」，实际是 playbook 里的固定值（详见 §5.7） | 从 `docker ps` / K8s 副本数动态计算 | ⏳ 未实施 |
+| L2 的示例动作不存在 | README 说 L2 是「数据库操作、全量回滚」，playbook 里没有这些动作（详见 §5.7） | 按 README 的描述补齐对应 playbook | ⏳ 未实施 |
 
 ### 阶段 5 实施时的两个注意点
 
@@ -350,10 +408,13 @@ L2 里有一类是**短链应用根本没有对应机制**的：`rate_limit`（�
 | `python/collectors/__init__.py` | 新增 | 1 行 |
 | `python/collectors/prometheus_collector.py` | 新增 | ~250 行 |
 | `python/agents/monitor_agent.py` | 修改 | +74 / -23（阶段 3） |
-| `python/agents/rca_agent.py` | 修改 | 拓扑 + 故障模式库 + 证据探针重写（阶段 4） |
-| `python/core/orchestrator.py` | 修改 | +3（注入 `evidence_provider`） |
-| `python/api/main.py` | 修改 | +47 / -1（阶段 3）、+3（阶段 4 注入） |
-| `python/config/settings.py` | 修改 | +1 |
-| `python/models/events.py` | 修改 | +3 |
-| `python/tests/test_rca_shortlink.py` | 新增 | ~120 行（6 场景离线验证） |
+| `python/agents/rca_agent.py` | 修改 | 阶段 4：拓扑 + 故障模式库 + 证据探针重写；随后修 `or vector(0)` 兜底 |
+| `python/agents/heal_agent.py` | 修改 | 阶段 5：重写为 docker 执行器 + 短链 playbook；随后拆 `HealProposeAgent` / `HealExecuteAgent` |
+| `python/agents/change_agent.py` | 修改 | 阶段 5：风险模型换短链动作与服务；审批通过不再置 `resolved` |
+| `python/core/orchestrator.py` | 修改 | 阶段 4 注入 `evidence_provider`；阶段 5 改为五节点 DAG + 共享熔断器 |
+| `python/api/main.py` | 修改 | 阶段 3 接口 +47 / -1；阶段 4 注入；阶段 5 传自愈护栏参数 |
+| `python/config/settings.py` | 修改 | `monitor_enabled`；`blast_radius_max_percent` 0.2 → 0.5 |
+| `python/models/events.py` | 修改 | 补 `IncidentState.metadata`（阶段 3 硬前提） |
+| `python/tests/test_rca_shortlink.py` | 新增 | ~130 行（阶段 4，6 场景离线验证） |
+| `python/tests/test_heal_docker.py` | 新增 | ~330 行（阶段 5，18 条：安全护栏 + 动作映射 + 审批闸门） |
 | `.gitignore` | 新增 | 12 行 |
