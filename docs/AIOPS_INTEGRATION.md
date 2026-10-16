@@ -223,6 +223,10 @@ tomcat 忙线程: 2
 
 后果：**`redirect_5xx_rate`（5xx > 0.5/s）对这类故障完全失效**。而挂起比快速失败更危险——线程会被慢慢占满，却不产生任何 5xx 信号。本轮是靠「Redis 已停时重启应用」（连接被拒 → 立即 500）才制造出 5xx 的。
 
+> **✅ 已在阶段 5 修复**（详见 §5.8）：新增 `dependency_hang` 告警规则，
+> 改用「Tomcat 连接堆积 + 成功跳转吞吐归零」这两个**占用类**信号捕获挂起。
+> 实测该故障下 RCA 置信度 **0.99**，审批 → 执行完成 **5.5 秒**。
+
 这说明规则集缺一类**基于延迟 / 吞吐**的判据，例如：
 
 - 成功吞吐骤降：`rate(shortlink_redirect_total[2m])` 长期为 0，而总请求速率不为 0
@@ -382,6 +386,75 @@ dry-run 模拟 → 爆炸半径 < 20%？→ 熔断器开着？→ 审批通过�
 - 爆炸半径仍是常量，没有从 `docker ps` / K8s 副本数算；这对单实例的短链短链 compose 够用
 - `dry_run` 现在的「校验」是真实白名单校验，没有更深入的「无副作用试跑」（如 `docker inspect` 检查容器存在、目标容器已存在等）
 
+### 5.8 补 §4.7 缺口：依赖「挂起」检测
+
+§4.7 记录的盲区：依赖挂起时请求**既不返回也不报错**，状态码类规则
+完全失效。本轮把它补上。
+
+#### 为什么状态码类规则抓不到
+
+Micrometer 的 `http_server_requests_seconds_count` 只在**请求完成时**
+递增。请求挂住 → 没完成 → 不计入任何 status：
+
+| 故障形态 | 表现 | `redirect_5xx_rate` |
+|---|---|---|
+| 快速失败（连接被拒） | 立即 500 | ✅ 触发 |
+| 挂起（连接池耗尽 / 对端无响应） | 卡住不返回 | ❌ 恒为 0，失效 |
+
+危险在于：挂起比报错更隐蔽——Tomcat 线程被慢慢占满，而监控一片绿。
+
+#### 新规则：改用「占用类」信号
+
+既然完成计数抓不到，就改用**反映当前占用**的指标——这是请求"卡在半路"时
+唯一仍有信号的维度。判据：
+
+> **连接被占住不释放，同时成功跳转吞吐归零**
+
+```promql
+(
+  (sum(tomcat_connections_current_connections{job="shortlink-app"}) or vector(0)) > 20
+  and
+  (sum(rate(shortlink_redirect_total{job="shortlink-app"}[2m])) or vector(0)) < 0.05
+)
+or vector(0)
+```
+
+#### 一个必须注意的坑：每个操作数都要 `or vector(0)`
+
+`and` 要求两边**都非空**，任一边返回空则整个表达式返回空（漏报）。
+而挂起场景下 `rate(shortlink_redirect_total[2m])` 极容易为空：
+
+- 窗口内不足 2 个采样点 → `rate()` 返回空
+- 若跳转从未成功过 → 该计数器序列根本不存在
+
+因此两个操作数各自兜一层 `or vector(0)`，让「没观测到」等价于
+「观测值为 0」。**这与 `rca_agent._verify()` 是同一个坑、同一个解法。**
+
+#### RCA 侧：新增 `dependency_hang` 故障模式
+
+| 候选根因 | 先验 | 探针 |
+|---|---:|---|
+| Redis 连接挂起（读路径阻塞在 Lettuce 连接池等待） | 0.55 | `tomcat_connections_current_connections > 20` |
+| MySQL 连接挂起（缓存 miss 回源阻塞） | 0.25 | HikariCP 获取超时 > 0 |
+| 真实流量激增导致线程池打满（非依赖故障） | 0.20 | 总请求速率 > 50/s |
+
+### 5.9 阶段 5 修复的实测验证（挂起场景）
+
+故障注入 `docker stop shortlink-redis`，**不重启应用**，让它自然挂起：
+
+```
+21:54:30.692 [RCAAgent]         Root cause: Redis 连接挂起 (confidence: 0.99)
+21:54:30.693 [HealProposeAgent] 提议: restart_redis [L0] blast_radius=0.25
+21:54:30.693 [ChangeAgent]      APPROVED: risk=0.218 approver=auto-system
+21:54:36.181 [HealExecuteAgent] 执行结果: SUCCESS | 执行后验证: 已恢复 (healthy)
+21:54:36.182 [Orchestrator]     Workflow completed: status=resolved
+```
+
+审批 → 执行完成 **5.5 秒**，业务跳转恢复 302。
+
+**这条修复的价值**：此前该故障下监控完全无信号（`rca` 节点直接 skipped），
+现在能被精确定位到「Redis 连接挂起」并自动恢复。
+
 ---
 
 ## 补充改动
@@ -419,12 +492,12 @@ dry-run 模拟 → 爆炸半径 < 20%？→ 熔断器开着？→ 审批通过�
 | RCA 根因判错 | Redis 挂掉导致的 5xx，报「上游服务请求量激增导致 CPU 过载」 | `MOCK_SERVICE_TOPOLOGY` 无 `shortlink-app`；`redirect_5xx_rate` 不匹配任何 `FAULT_PATTERNS` 键 | ✅ 阶段 4 已修复 |
 | Heal 动作既不真也不对 | 执行 `kubectl annotate ...`，短链无 K8s，且限流对 Redis 故障无效 | playbook 全为 K8s 命令，执行是假的（直接 return SUCCESS） | ✅ 阶段 5 已修复 |
 | 审批不是闸门而是橡皮图章 | ChangeAgent 审批晚于 Heal 执行，且审批通过即置 `resolved` 而实际未执行 | DAG 顺序 heal → change；`ChangeAgent` 里 `approved` 直接写 `resolved` | ✅ 已修复（§5.6，commit `dd79d05`） |
+| 依赖「挂起」检测不到 | 请求挂住不产生 5xx，`redirect_5xx_rate` 完全失效；挂起比快速失败更危险 | 规则集只有状态码维度，缺占用类信号 | ✅ 已修复（§5.8 / §5.9） |
 
 ### 仍待处理（均为验证中发现、尚未实施）
 
 | 问题 | 影响 | 建议 | 状态 |
 |------|------|------|------|
-| 依赖「挂起」检测不到 | 请求挂住不产生 5xx，`redirect_5xx_rate` 完全失效（详见 §4.7）；而挂起比快速失败更危险——线程慢慢占满却不产生任何信号 | 补延迟 p99 或「成功吞吐骤降」类规则 | ⏳ 未实施 |
 | 监控循环的事件不进 `incident_history` | `/api/v1/incidents` 返回 0 条，自愈做了什么只能翻日志 | MonitorLoop 每轮跑完把 incident 回写到 `incident_history` | ⏳ 未实施 |
 | 爆炸半径是硬编码常量 | README 说是「受影响 Pod 数 / 总 Pod 数」，实际是 playbook 里的固定值（详见 §5.7） | 从 `docker ps` / K8s 副本数动态计算 | ⏳ 未实施 |
 | L2 的示例动作不存在 | README 说 L2 是「数据库操作、全量回滚」，playbook 里没有这些动作（详见 §5.7） | 按 README 的描述补齐对应 playbook | ⏳ 未实施 |
