@@ -13,11 +13,11 @@
 | 1（短链侧）| Actuator + 业务指标 | — | `shortlink_redirect_total`、`shortlink_consume_lag` 等 |
 | 2 | Prometheus scrape job | `9f35d31` | AIOps Prometheus 开始抓 `host.docker.internal:8082` |
 | 3 | 真实采集 + 双层告警 | `6f7d6a4` | `collectors/` + `MonitorAgent` 双层路径 |
-| 4 | RCA 换短链拓扑与故障模式库 | `6052b9f` | 根因判定由证据驱动（PromQL 探针） |
+| 4 | RCA 换短链拓扑与故障模式库 | `6052b9f` `cde5327` | 根因判定由证据驱动（PromQL 探针） |
 | fix | `IncidentState.metadata` 字段 | `293c516` | 修复上游 metadata 通道不可用的硬 bug |
 | chore | `.gitignore` | `dcc08a0` | 排除构建产物 / IDE / OS 杂项 |
 
-五个 commit 已推送到 fork：`git@github.com:pengwtga/multi-agent-aiops.git`；`upstream` 仍指向 `bcefghj/multi-agent-aiops`，便于后续同步上游。
+六个 commit 已推送到 fork：`git@github.com:pengwtga/multi-agent-aiops.git`；`upstream` 仍指向 `bcefghj/multi-agent-aiops`，便于后续同步上游。
 
 ---
 
@@ -182,7 +182,52 @@ cd python && PYTHONPATH=. python tests/test_rca_shortlink.py
 
 其中「健康状态误报」是特地设计的负例：当证据把所有已知根因都证伪时，系统应保持**低置信度**而不是硬编一个错因——这是证据驱动相对先验驱动的关键收益。
 
-> **未完成的验证**：端到端故障注入（真实 `docker stop shortlink-redis` + RCA 回查真实 Prometheus）尚未执行——验证期间 Docker 守护进程故障，而 shortlink 应用与 AIOps Prometheus 均运行在容器内。上述验证覆盖的是判定逻辑，探针的 PromQL 在真实 Prometheus 上的返回值仍需在环境恢复后确认。
+### 4.6 端到端验证（真实 Prometheus + 真实故障）
+
+故障注入：`docker stop shortlink-redis` → 重启应用使连接快速失败（原因见 §4.7）→ 压流量制造持续 5xx。
+
+```
+Alert fired: redirect_5xx_rate [critical]          5xx 速率 13.46/s
+探针 成立:   Redis 不可达   实测=0.0000 (lt 0.05)   ← 成功跳转吞吐归零
+探针 不成立: MySQL 不可达   实测=0.0000 (gt 0.0)
+探针 不成立: 流量激增       实测=6.7896 (gt 20.0)
+Root cause: Redis 不可达：读路径 sl:link:{code} 直接抛异常，无降级逻辑
+            (confidence 0.81) → [restart_redis, check_dependency]
+HealAgent:  No playbook for action: restart_redis   ← 阶段 5 缺口，优雅降级未崩溃
+```
+
+与阶段 3 同一故障的判定对比：
+
+| | 阶段 3（改前） | 阶段 4（改后） |
+|---|---|---|
+| 根因 | 上游服务请求量激增导致 CPU 过载 ❌ | Redis 不可达 ✅ |
+| 置信度 | 0.42 | **0.81**（与桩测试预测值一致） |
+| 建议动作 | `rate_limit`（且是假 kubectl 命令） | `restart_redis` / `check_dependency` |
+
+恢复 Redis 后：跳转 302、`actuator/health` UP、三个 Prometheus 抓取目标全 up。
+
+### 4.7 验证中发现的新缺口：依赖「挂起」不产生 5xx
+
+验证时先按阶段 3 的方式直接 `docker stop shortlink-redis`（应用已运行一段时间、连接池里有存量连接），结果请求**不是返回 500 而是挂住**：
+
+```
+单次请求:     http=000 耗时=40.0s（超时无响应）
+5xx 速率:     0.0095/s    ← 几乎为零
+redirect 吞吐: 0
+tomcat 忙线程: 2
+```
+
+原理：连接已建立但 Redis 不再响应，请求卡在读写等待上，**走不到「返回 500」那一步**；而 Micrometer 只在请求完成时记录 status，挂起的请求不计入任何状态码。
+
+后果：**`redirect_5xx_rate`（5xx > 0.5/s）对这类故障完全失效**。而挂起比快速失败更危险——线程会被慢慢占满，却不产生任何 5xx 信号。本轮是靠「Redis 已停时重启应用」（连接被拒 → 立即 500）才制造出 5xx 的。
+
+这说明规则集缺一类**基于延迟 / 吞吐**的判据，例如：
+
+- 成功吞吐骤降：`rate(shortlink_redirect_total[2m])` 长期为 0，而总请求速率不为 0
+- p99 延迟：基于 `http_server_requests_seconds` histogram 的 quantile
+- 线程池占用率持续高位：`tomcat_threads_busy_threads / tomcat_threads_config_max_threads`
+
+此项留待后续阶段（不在阶段 4 范围内）。
 
 ---
 
@@ -220,6 +265,7 @@ cd python && PYTHONPATH=. python tests/test_rca_shortlink.py
 |------|------|------|------|
 | RCA 根因判错 | Redis 挂掉导致的 5xx，报「上游服务请求量激增导致 CPU 过载」 | `MOCK_SERVICE_TOPOLOGY` 无 `shortlink-app`；`redirect_5xx_rate` 不匹配任何 `FAULT_PATTERNS` 键 | ✅ 阶段 4 已修复 |
 | Heal 动作既不真也不对 | 执行 `kubectl annotate svc/shortlink-app rate-limit=100 -n production`——短链是 docker compose 部署，没有 k8s；且根因若是 Redis 不可达，该拉起 Redis 而非限流 | playbook 全为 k8s 命令，执行是假的（直接 return SUCCESS） | ⏳ 阶段 5：换 docker 执行器 + 真实动作映射 |
+| 依赖「挂起」检测不到 | 请求挂住不产生 5xx，`redirect_5xx_rate` 规则完全失效（详见 §4.7） | 规则集只有状态码维度，缺延迟 / 吞吐维度 | ⏳ 后续：补延迟或成功吞吐骤降类规则 |
 
 ### 一个预期内的中间状态
 
