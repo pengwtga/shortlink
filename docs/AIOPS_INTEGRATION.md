@@ -14,10 +14,11 @@
 | 2 | Prometheus scrape job | `9f35d31` | AIOps Prometheus 开始抓 `host.docker.internal:8082` |
 | 3 | 真实采集 + 双层告警 | `6f7d6a4` | `collectors/` + `MonitorAgent` 双层路径 |
 | 4 | RCA 换短链拓扑与故障模式库 | `6052b9f` `cde5327` | 根因判定由证据驱动（PromQL 探针） |
+| 5 | Heal 换真实 docker 执行器 | `1e8d8dd` | 真实自愈闭环（告警 → 重启 Redis → 验证恢复） |
 | fix | `IncidentState.metadata` 字段 | `293c516` | 修复上游 metadata 通道不可用的硬 bug |
 | chore | `.gitignore` | `dcc08a0` | 排除构建产物 / IDE / OS 杂项 |
 
-六个 commit 已推送到 fork：`git@github.com:pengwtga/multi-agent-aiops.git`；`upstream` 仍指向 `bcefghj/multi-agent-aiops`，便于后续同步上游。
+七个 commit 已推送到 fork：`git@github.com:pengwtga/multi-agent-aiops.git`；`upstream` 仍指向 `bcefghj/multi-agent-aiops`，便于后续同步上游。
 
 ---
 
@@ -231,6 +232,66 @@ tomcat 忙线程: 2
 
 ---
 
+## 阶段 5：Heal 换真实 docker 执行器（commit `1e8d8dd`）
+
+### 5.1 动机
+
+阶段 4 把根因判对了，但自愈仍是假的：HealAgent 输出 `kubectl annotate svc/shortlink-app rate-limit=100 -n production`——短链是 docker compose 部署，没有 K8s；且动作本身也不对（限流对 Redis 不可达无效）。更根本的是 `_execute_remediation` 直接 `return SUCCESS`，压根没执行。
+
+### 5.2 改动
+
+| 项 | 改动 |
+|----|------|
+| 修复方案库 | `REMEDIATION_PLAYBOOKS`（K8s）→ `SHORTLINK_PLAYBOOKS`（docker）：`restart_redis` / `restart_mysql` / `restart_container` / `restart_consumer` + 三个只读诊断动作 |
+| 执行器 | 新增 `DockerExecutor`：真实执行。只认 `docker`、子命令走白名单（`restart`/`start`/`exec`/`inspect`/`ps`/`logs`/`compose`）、永远用 argv 列表不用 `shell=True`、超时强制 kill |
+| 执行后验证 | 重启类动作轮询 `docker inspect` 确认容器回到 healthy |
+| 动作选择 | `_select_best_action` 改为尊重 RCA 排序（原实现用固定全局优先级，曾把 Redis 故障选成 `rate_limit`） |
+| dry_run 语义 | 修正为「True 时只校验不执行」（原实现反而在 `dry_run=True` 时执行） |
+| 审批风险模型 | `ChangeAgent` 的 `OPERATION_RISK` / `CRITICAL_SERVICES` 换成短链动作与服务，否则新动作落到默认 0.5 高风险会被拦 |
+| 爆炸半径上限 | `blast_radius_max_percent` 0.2 → 0.5：容器重启的爆炸半径天然大于 K8s 重启单个 Pod，0.2 会把所有重启动作降级成人工 |
+
+### 5.3 关键设计：宁可只提建议，也不伪造执行
+
+只有「**幂等 + 可验证 + 影响可控**」的动作才允许 L0 自动执行：
+
+| 级别 | 动作 | 理由 |
+|------|------|------|
+| **L0 自动** | `restart_redis`、`check_dependency`、`check_mysql`、`check_t_consumer_offset` | 幂等（重启可重复）、可验证（`docker inspect` 查健康）、只读诊断无副作用 |
+| **L1 半自动** | `restart_container`、`restart_consumer`、`restart_mysql` | 会中断在途请求 / 影响写入，需人确认 |
+| **L2 人工** | `scale_app`、`rate_limit`、`block_ip`、`circuit_breaker`、`tune_threads`、`heap_dump`、`rollback` 系列 | 见下 |
+
+L2 里有一类是**短链应用根本没有对应机制**的：`rate_limit`（阈值写死在配置里，无运行时开关）、`block_ip`（无 IP 黑名单）、`circuit_breaker`（无熔断，读 Redis 失败直接抛异常）。对这些动作，`argv_template` 设为 `None` 并附上 `manual_reason`——**明确告诉人「本系统不执行，需要你来做」，而不是伪造一个执行结果**。
+
+`scale_app` 标 L2 是刻意的：水平扩容时雪花 ID 的 `SHORTLINK_WORKER_ID` 必须每实例唯一，自动扩容会导致发号碰撞（重复短码）。
+
+### 5.4 端到端自愈闭环验证
+
+`AIOPS_HEAL_DRY_RUN=false` + 真实 `docker stop shortlink-redis`：
+
+```
+14:45:33 Alert fired: redirect_5xx_rate [critical]
+14:45:33 探针 成立: Redis 不可达 实测=0.0000 (lt 0.05)
+14:45:33 Root cause: Redis 不可达 (confidence 0.81) → [restart_redis, check_dependency]
+14:45:33 DRY-RUN: docker restart shortlink-redis
+14:45:39 执行结果: SUCCESS: shortlink-redis | 执行后验证: shortlink-redis 已恢复 (health=healthy)
+14:45:39 Action: restart_redis [L0] blast_radius=0.25
+14:45:39 ChangeAgent APPROVED: restart_redis risk=0.258 approver=auto-system
+```
+
+从告警到验证恢复 **6 秒**；业务侧跳转 500 → 302、`actuator/health` UP。注入的故障是真实 `docker stop`，恢复也是真实 `docker restart`——闭环里没有任何模拟。
+
+测试 `tests/test_heal_docker.py` **11/11**：命令白名单、拒绝 `docker rm/rmi/system/volume`、无 shell 注入（断言注入串不会落地成文件）、人工动作不可执行且说明理由、动作映射到正确容器、只读诊断爆炸半径为零、动作选择尊重 RCA 排序、dry_run 不执行、真实只读命令可执行。
+
+### 5.5 验证中发现的问题：审批发生在执行之后
+
+日志里 `ChangeAgent APPROVED` 的时间戳（14:45:39.538）**晚于** `执行结果`（14:45:39.537）——因为编排器的 DAG 是 `monitor → rca → heal → change`，Heal 先执行、Change 后审批。
+
+后果：**L1/L2 动作的审批形同橡皮图章**。它并不阻止执行，只是在执行后补一条审计记录；而 L1 动作当前本来就不会执行（只有 L0 会执行），于是出现了「审批通过但没有执行」的怪状态。
+
+要真正让审批成为闸门，需要把 Heal 拆成「提议」与「执行」两段：`heal_propose`（产出 HealEvent，永不执行）→ `change`（审批）→ `heal_execute`（仅在审批通过后执行）。此项尚未实施。
+
+---
+
 ## 补充改动
 
 ### metadata 字段修复（commit `293c516`）
@@ -257,21 +318,27 @@ tomcat 忙线程: 2
 
 ---
 
-## 遗留问题 → 阶段 5
+## 遗留问题（阶段 5 之后）
 
-阶段 3 验证暴露的两处**逻辑错误**（都不是 bug 而是设计缺口），RCA 那处已在阶段 4 修复，剩下 Heal 的执行问题：
+阶段 3 验证暴露的两处**逻辑错误**（都不是 bug 而是设计缺口）已全部修复：
 
 | 问题 | 现象 | 根因 | 状态 |
 |------|------|------|------|
 | RCA 根因判错 | Redis 挂掉导致的 5xx，报「上游服务请求量激增导致 CPU 过载」 | `MOCK_SERVICE_TOPOLOGY` 无 `shortlink-app`；`redirect_5xx_rate` 不匹配任何 `FAULT_PATTERNS` 键 | ✅ 阶段 4 已修复 |
-| Heal 动作既不真也不对 | 执行 `kubectl annotate svc/shortlink-app rate-limit=100 -n production`——短链是 docker compose 部署，没有 k8s；且根因若是 Redis 不可达，该拉起 Redis 而非限流 | playbook 全为 k8s 命令，执行是假的（直接 return SUCCESS） | ⏳ 阶段 5：换 docker 执行器 + 真实动作映射 |
-| 依赖「挂起」检测不到 | 请求挂住不产生 5xx，`redirect_5xx_rate` 规则完全失效（详见 §4.7） | 规则集只有状态码维度，缺延迟 / 吞吐维度 | ⏳ 后续：补延迟或成功吞吐骤降类规则 |
+| Heal 动作既不真也不对 | 执行 `kubectl annotate ...`，短链无 K8s，且限流对 Redis 故障无效 | playbook 全为 K8s 命令，执行是假的（直接 return SUCCESS） | ✅ 阶段 5 已修复 |
 
-### 一个预期内的中间状态
+### 仍待处理（均为验证中发现、尚未实施）
 
-阶段 4 之后，RCA 会输出 `restart_redis` / `restart_mysql` / `check_dependency` / `restart_consumer` 等短链专属动作，而这些在 HealAgent 的 k8s playbook 里并不存在。此时 HealAgent 会**优雅降级**：记 `No playbook for action` 并跳过，不崩溃——表现为「根因判对了，但没有自愈动作」。这正是阶段 5 要补的部分：用 docker 执行器（`docker start shortlink-redis` 等）替换 k8s playbook。
+| 问题 | 影响 | 建议 | 状态 |
+|------|------|------|------|
+| 依赖「挂起」检测不到 | 请求挂住不产生 5xx，`redirect_5xx_rate` 完全失效（详见 §4.7）；而挂起比快速失败更危险——线程慢慢占满却不产生任何信号 | 补延迟 p99 或「成功吞吐骤降」类规则 | ⏳ 未实施 |
+| 审批发生在执行之后 | ChangeAgent 审批晚于 Heal 执行，L1/L2 的审批不成为闸门，出现「审批通过但没有执行」（详见 §5.5） | Heal 拆成 propose / execute 两段，审批插在中间 | ⏳ 未实施 |
+| 监控循环的事件不进 `incident_history` | `/api/v1/incidents` 返回 0 条，自愈做了什么只能翻日志 | MonitorLoop 每轮跑完把 incident 回写到 `incident_history` | ⏳ 未实施 |
 
-阶段 5 需注意两点：短链 compose 写死了 `container_name`（`shortlink-app` 等）；以及水平扩容时雪花 ID 的 `SHORTLINK_WORKER_ID` 必须每实例唯一，否则发号碰撞——因此 `scale_app` 应标 L2 人工，不让 Agent 自动扩。
+### 阶段 5 实施时的两个注意点
+
+- 短链 compose 写死了 `container_name`（`shortlink-app` / `shortlink-mysql` / `shortlink-redis` / `shortlink-kafka`），执行器直接用这些名字
+- 水平扩容时雪花 ID 的 `SHORTLINK_WORKER_ID` 必须每实例唯一，否则发号碰撞 → `scale_app` 已标 L2 人工，不让 Agent 自动扩
 
 ---
 
