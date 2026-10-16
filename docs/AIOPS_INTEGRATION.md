@@ -586,6 +586,54 @@ build_state() 判断「最近是否有告警」时永远读到空
 实测：点一下按钮全程自动，流水线 5 个节点全部「已完成」，
 70 秒后仍保持不丢失。
 
+### 5.14 卡片字段全为空 + 演练前未清空上次流水线
+
+**一、当前状态 / 历史事件字段为空**
+
+前端 `renderCards()` / `renderHistory()` 读的是**原始 Agent 对象**的字段名，
+但 API 下发的是 `_serialize_*` 简化后的字段，两边对不上，卡片全落成「—」：
+
+| 前端读取 | API 实际下发 | 结果 |
+|---|---|---|
+| `a.alert_name` / `a.metric_name` | `a.name` / `a.metric` | 空 ❌ |
+| `a.metric_value` | `a.value` | 空 ❌ |
+| `h.action_type` / `h.heal_level` | `h.action` / `h.level` | 空 ❌ |
+| `h.execution_result` | `h.result` | 空 ❌ |
+| `c.approval_status` | `c.status` | 空 ❌ |
+
+修复：前端字段名对齐 `_serialize_*` 的实际输出。
+
+另：历史事件表的时间列也是空的 —— `_snapshot_incident()` 压根没下发
+`created_at`。补上，并转成**本地时间**：
+
+```
+created_at 来自 datetime.utcnow()，是不带时区标记的 UTC。
+直接展示会比系统时间早 8 小时（UTC+8），和日志对不上。
+```
+
+**二、点击「故障演练」时应先清空上一次的流水线**
+
+每次演练都是一轮**全新**闭环。若不清空，上次的流水线结果会一直挂着，
+和新一轮的进度混在一起，看不出这次跑到哪一步了。
+
+修复：新增 `Orchestrator.reset_workflow()`，在 `drill_inject` 执行注入
+**之前**把所有节点重置为 pending，并清空 `incident_history`。
+
+实测：
+
+```
+点击前：事件数=1  已完成|已完成|已完成|已完成|已完成
+点击后：事件数=0  监控中|待触发|待触发|待触发|待触发   ← 立即清空 ✅
+
+闭环完成后卡片字段齐全：
+    告警   dependency_hang   critical · 实测 52.0
+    根因   Redis 连接挂起…    置信度 0.99
+    动作   restart_redis     L0 · 爆炸半径 0.25
+    审批   approved          风险 0.218 · auto-system
+    执行   SUCCESS: shortlink-redis | 已恢复 (healthy)
+时间列 00:56:57 与系统时间 00:58:51 一致（此前差 8 小时）
+```
+
 ---
 
 ## 补充改动
