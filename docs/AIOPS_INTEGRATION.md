@@ -872,6 +872,36 @@ Root cause: 近期部署引入缺陷 (confidence: 0.10) → 不提议自愈
 实测：连续两次演练均 `dependency_hang` (confidence 0.99) → `restart_redis`
 成功 → Redis 恢复 healthy；告警 2 = 事件 2。
 
+### 5.21 第二次点演练，前 4 个节点仍是上一轮的「已完成」（commit `4b9a425`）
+
+现象：在已完成状态下再次点演练，前 4 个节点保持「已完成」不变，只有
+最慢的自愈执行（5~6s）才看得出在动 —— 整体像「流水线显示有延迟」。
+
+根因是快照回退，不是渲染延迟：
+
+```python
+# reset_workflow() 末尾
+self._last_alert_workflow = []          # ← 置空
+
+# build_state()
+wf_source = alert_workflow or (active.workflow if has_alert else None)
+```
+
+快照一空就回退到 `active.workflow`（最近事件的快照）—— 那是上一轮
+**已跑完**的流水线，于是旧状态一直挂着，直到新一轮闭环跑到某节点才被
+覆盖；前 4 个节点是毫秒级，只有自愈执行跑得久，才看得出在动。
+
+修：重置后发布一份**重置之后的初始快照**（全 PENDING）而不是置空，并
+清掉 `skip_reason`（避免「根因置信度 0.15 < 0.3」这类备注残留到下一轮）。
+
+实测（在已完成状态下再次演练）：
+
+```
+点击后 +3s   待执行|待执行|待执行|待执行|待执行   ← 立即回到初始态
++15s         仍待执行（探测负载期间，告警未触发）
++27s         全已完成（自愈执行 5.58s），Redis 恢复 healthy
+```
+
 ---
 
 ## 补充改动
