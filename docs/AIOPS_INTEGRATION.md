@@ -670,6 +670,53 @@ created_at 来自 datetime.utcnow()，是不带时区标记的 UTC。
 
 自愈执行是大头（docker restart + 执行后验证），其余节点都在毫秒级。
 
+### 5.16 演练不再清空历史 + 流水线实时逐个亮起
+
+连续两次故障演练暴露两个问题：
+
+| 问题 | 现象 | 根因 |
+|---|---|---|
+| ① 第二次演练把数据清零 | 一点「故障演练」，右上角告警数归 0、历史事件表被清空 | `drill_inject` 里 `incident_history.clear()`（此前修「两数对不上」时还误加了 `alerts_fired.clear()`） |
+| ② 节点不逐个亮起 | 流水线初始化正常，之后长时间无变化，**等自愈执行跑完（约 5.6s）才一次性显示「已完成」和耗时** | 快照只在节点**结束**时更新；未执行节点残留上轮 `SKIPPED`；Dashboard 又以 `has_alert` 强制空闲态 |
+
+**一、修复 ①：演练只重置流水线，不清历史/告警**
+
+事件历史是「历史」，跨演练累积才能横向对比多次结果。右上角「告警数」
+读的是 `monitor_loop.alerts_fired`，而 `alerts_fired` 与 `incident_history`
+都在 `state.alert_event is not None` 时各自 +1，**天然 1:1**。清掉任一个，
+两个数字就会对不上。因此 `drill_inject` 只保留：
+
+```python
+orchestrator.reset_workflow()              # 新一轮闭环从零开始
+orchestrator.clear_monitor_fingerprints()  # 避免被 5 分钟去重窗口抑制
+# 不再 incident_history.clear() / alerts_fired.clear()
+```
+
+**二、修复 ②：闭环执行期间逐节点发布快照**
+
+- `Orchestrator` 新增 `_last_alert_workflow`：只在「有告警」的闭环里更新，
+  且**节点开始执行（置 RUNNING）和节点结束（算完耗时）各发一次**。
+  全局 `_nodes` 会被无告警的 `run()` 冲成 `SKIPPED`，这份快照不会。
+- `run()` 开头先把所有节点重置为 `PENDING`：否则未轮到的节点会带着上一轮
+  `SKIPPED`，前端看到「已跳过」而不是「待执行」。
+- `build_state()` 取快照的优先级改为 `alert_workflow or active.workflow`——
+  实时快照优先，历史事件快照兜底。顺序反了会一直挂着上一轮「已完成」。
+  演练 `reset_workflow()` 时清空该快照，新一轮才能从头亮起。
+- 空闲态判断由 `if not has_alert` 改为 `if not wf_source`。`has_alert` 取自
+  事件历史，而事件要等 5 个节点全跑完才写入 —— 闭环跑的过程中它恒为假，
+  进度就被强行覆盖成「监控中 / 待触发」，表现正是「节点不亮」。
+
+实测（连续两次演练，每 3 秒采样 `/dashboard/state`）：
+
+```
+第一次  +12s 告警0 事件0 已完成|已完成|已完成|已完成|执行中  ← 自愈执行期间即可见
+        +15s 告警0 事件0 已完成|已完成|已完成|已完成|执行中
+        +18s 告警1 事件1 已完成|已完成|已完成|已完成|已完成 (5.56s)
+第二次  点击前 告警1 事件1 已完成×5                        ← 未清零 ✅
+        +15s 告警1 事件1 已完成|已完成|已完成|已完成|执行中
+        +18s 告警2 事件2 已完成×5                          ← 1:1 累积 ✅
+```
+
 ---
 
 ## 补充改动
