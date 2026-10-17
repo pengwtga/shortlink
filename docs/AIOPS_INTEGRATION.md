@@ -764,6 +764,47 @@ docker ps → shortlink-redis 不在（自愈没跑到，Redis 一直停着）
 自愈执行 已跳过 — | 变更审批未通过，闸门未放行不执行
 ```
 
+### 5.18 立即巡检不计告警数 + 演练冒出 anomaly_tomcat_busy_threads（commit `81b6743`）
+
+**一、立即巡检的告警不累加到右上角告警数**
+
+按钮打的是 `/api/v1/incidents/trigger` 且**不带 metric_data**，
+`MonitorAgent.process()` 于是走 `_generate_demo_alert()`，生成一条
+**伪造的** `high_cpu_usage`：
+
+- 它不是真实巡检结果（与 Prometheus、规则层、基线层全无关系）
+- 只 `append` 进 `incident_history`，不进 `monitor_loop.alerts_fired`
+  → 事件 +1、告警 +0（实测点两次巡检后：事件 7 / 告警 5）
+
+修：
+
+| 改动 | 说明 |
+|---|---|
+| `MonitorLoop.run_once()` | 手动跑一轮采集，与自动巡检同源（规则层 + 基线层） |
+| `POST /api/v1/monitor/check` | 「立即巡检」改走这里，返回本轮告警条数 |
+| `trigger` 端点补记 `alerts_fired` | 手动触发也记 `source=manual`，两处计数保持 1:1 |
+| `_record_alert` → `record_alert` | 改为公开方法供 API 层调用 |
+
+**二、演练冒出 `anomaly_tomcat_busy_threads`**
+
+它是 `dependency_hang` 的**症状**而不是新故障：50 并发探测请求挂在
+Redis 上，Tomcat 忙碌线程必然堆积，统计层把它当成「未知突变」又报一条，
+于是同一次演练出现两条告警。
+
+修：规则层告警按服务记时间戳（5 分钟窗口），统计层命中异常时先检查
+「该服务是否刚被规则层点名」—— 是则抑制。根因已经在闭环里处理了，
+症状不该再刷屏。时序上 `_run_cycle` 先跑规则层、再跑基线层，同轮内生效。
+
+```
+对照验证（离线，样本 ≥20）：
+  有规则告警在窗口内 → 未告警（症状抑制）
+  无规则告警（对照）  → anomaly_tomcat_busy_threads   ← 真实线程池异常仍能捕获
+
+实测：注入 Redis 故障 → 立即巡检 → {"alerts_this_cycle": 1}
+      告警数 2 = 事件数 2，告警名 dependency_hang（不再是 high_cpu_usage）
+      演练后 60s 仍只有 dependency_hang，无症状噪音
+```
+
 ---
 
 ## 补充改动
