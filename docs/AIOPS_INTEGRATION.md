@@ -717,6 +717,53 @@ orchestrator.clear_monitor_fingerprints()  # 避免被 5 分钟去重窗口抑�
         +18s 告警2 事件2 已完成×5                          ← 1:1 累积 ✅
 ```
 
+### 5.17 演练只报 anomaly_app_cpu_usage 且卡在根因分析（commit `ae13931`）
+
+点故障演练后，页面冒出统计层告警 `anomaly_app_cpu_usage`，流水线停在
+根因分析不再往下走。三个独立原因叠加：
+
+| # | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| ① | 真正该报的 `dependency_hang` 没触发 | 演练没拿到探测短链码 → 不发探测负载 → 判据（连接堆积 + 成功吞吐归零）不成立 | 取码前先 `_ensure_running()` 拉起 Redis 并等 healthcheck；缓存为空时改为经应用接口新建一条短链 |
+| ② | 后面三个节点永远「待执行」 | 被闸门拦下的节点不写快照（SKIPPED 只在无告警轮次出现） | 跳过时也发快照 + 每节点带 `skip_reason`，前端显示原因；未执行节点耗时显示「—」 |
+| ③ | 冒出无意义的 CPU 告警 | `process_cpu_usage` 常年 0.2%~0.6% 抖动，方差极小，3-sigma/EWMA 轻易凑够 2 票 | 基线指标加噪声地板 `min_delta`（CPU 5 个百分点 / 线程 5 / lag 500），振幅不足则抑制 |
+
+**① 为什么取不到码**：探测码来自 `docker exec shortlink-redis redis-cli
+--scan "sl:link:*"`。上一轮自愈若没跑到（比如只命中了低置信度告警），
+Redis 就一直停着，scan 必然失败；而 Redis 被自愈重启后缓存是空的，
+同样扫不到 —— 于是「演练点下去毫无动静」。
+
+```
+14:04:17 [DRILL] 探测短链码: (未拿到) → 跳过探测负载
+14:05:14 Alert fired: anomaly_app_cpu_usage [medium]     ← 只有这个无关告警
+14:05:14 Root cause: 消费端批量聚合占用 CPU (confidence: 0.15)
+14:05:14 Skipping node: heal_propose / change / heal_execute
+docker ps → shortlink-redis 不在（自愈没跑到，Redis 一直停着）
+```
+
+**③ 为什么统计层会误报**：统计检测只回答「是否偏离分布」，不回答
+「偏离得有没有意义」。CPU 在 0.0017~0.0057 之间抖动也能凑够 2 票，
+报出 `[critical/medium]`。故需在投票之外再补一道绝对振幅门槛，且以
+近期**中位数**为基线（不会被异常样本自身拉高）。
+
+**顺带修掉一个自己引入的副作用**：`_probe_load()` 在没拿到码时会回退
+调用 `_resolve_probe_code()`，而后者会先拉起 Redis —— 故障已注入却把
+容器偷偷恢复，探测请求根本不会挂起。改为直接跳过探测负载。
+
+实测：
+
+```
+演练 → 探测短链码 9SjNQXLpjr → docker stop shortlink-redis
+     → 50 并发探测负载（25s）→ 下一轮 dependency_hang 触发
+监控告警 2ms | 根因分析 13ms | 自愈提议 1ms | 变更审批 1ms | 自愈执行 5.60s
+告警数 1 = 事件数 1；Redis 恢复 healthy
+
+跳过分支的展示（build_state 离线验证）：
+自愈提议 已跳过 — | 根因置信度 0.15 < 0.3，不提议自愈
+变更审批 已跳过 — | 没有待审批的自愈方案
+自愈执行 已跳过 — | 变更审批未通过，闸门未放行不执行
+```
+
 ---
 
 ## 补充改动
