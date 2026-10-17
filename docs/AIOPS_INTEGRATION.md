@@ -902,6 +902,139 @@ wf_source = alert_workflow or (active.workflow if has_alert else None)
 +27s         全已完成（自愈执行 5.58s），Redis 恢复 healthy
 ```
 
+### 5.22 requirements.txt 里那些包是干什么的，能用它们重写吗
+
+`requirements.txt` 列了 langchain / langgraph / langchain-openai / confluent-kafka /
+neo4j / chromadb / prophet / pandas，但当前 Python 实现**一个都没用到**。
+它们的构成逻辑是照岗位 JD 列的技术栈（`docs/project-plan.md:47`：「核心要求：
+Go/Python + LLM + Agent 框架 + RAG + K8s + 可观测性」），不是运行依赖。
+
+| 包 | 原设计角色 | 实际替代 | 证据 |
+|---|---|---|---|
+| langgraph | Agent 编排状态机 | 自建 `WorkflowNode`（条件 + 重试 + 熔断 + 检查点） | `core/orchestrator.py:62` |
+| langchain-openai | 调 LLM | **完全没接**；`settings.py` 的 `openai_api_key/model/base_url` 三个字段无人读取 | — |
+| langchain | Prompt / 工具链封装 | 未使用 | — |
+| confluent-kafka | Agent 间事件总线 | `InMemoryEventBus`（`KafkaEventBus` 只是备选） | `core/event_bus.py:46/93` |
+| neo4j | 服务依赖拓扑知识图谱 | 硬编码 `SHORTLINK_TOPOLOGY` | `rca_agent.py:45` |
+| chromadb | RAG 向量库（历史故障检索） | 未实现（代码无 embedding / 向量检索） | — |
+| prophet | 时序预测 / 异常检测 | 自建 `AnomalyDetector`（3-sigma + EWMA + IsolationForest） | `models/time_series.py` |
+
+**为什么不用它们也能跑通**：
+
+1. 编排是线性的（`monitor → rca → heal_propose → change → heal_execute` + 条件
+   闸门），没有循环、没有动态分支，用不上"图"。自建状态机 200 行，已覆盖
+   LangGraph 的核心语义（节点 / 条件边 / 检查点 / 重试）。
+2. 根因是**确定性**的贝叶斯更新 `posterior = likelihood × prior / evidence`，
+   先验来自故障模式库、似然来自探针实测，可解释（页面上直接显示
+   "探针 X 实测 0.4762 → 证伪"）。
+3. 没有任何环节需要生成自然语言或理解非结构化文本，LLM 无处可用。
+
+**能不能用它们重写（成本评估，规模参照：rca 589 行 / 编排 427 行）**：
+
+| 改造 | 代码量 | 风险 | 2C2G 可行性 | 结论 |
+|---|---|---|---|---|
+| C. LLM 只做表达层（把结论写成人话） | ~50 行 | 几乎为零 | ✅ | 顺手做 |
+| B. LLM 只补证据（补探针看不到的信息） | 100–150 行 | 低（失败可降级） | ✅ | **优先做** |
+| 编排换 LangGraph | 200–300 行 | 中 | ✅ | 加「方案升级链」或面试需要时做 |
+| A. 全 LLM 判根因 | 300–500 行 | 高（误自愈） | ⚠️ 依赖外网 | 不建议 |
+| RAG（chromadb） | 300+ 行 | 中 | ❌ 内存不够 | 优先级最低 |
+
+**前提要先说清楚：换成 LLM 并不会让根因判得更准。** 当前故障是**可枚举**的
+（Redis / MySQL / 线程池 / 流量激增），每类都有**一手信号**（PromQL 探针），
+LLM 的优势在非结构化、不可枚举的场景。前面 §5.20 修的是"探针窗口被稀释"
+"判据太严导致证伪"这类**工程问题**，不是"推理不够聪明"。
+
+**A 方案的四个坑**（为什么不建议把贝叶斯换成 LLM）：
+
+| 坑 | 后果 |
+|---|---|
+| 置信度不可校准 | LLM 说 0.8 ≠ 它 80% 有把握；现有闸门 `confidence >= 0.3` 就自愈，直接塞模型的概率 = 误自愈 |
+| 不可复现 | 同样输入两次结论可能不同，误自愈后无法复盘 |
+| 延迟 | 现在 RCA 13–27ms，LLM 一次几秒到几十秒 |
+| 外部依赖 | 服务器需出外网调 API；无 key 无法运行；每次告警都有成本 |
+
+**B 方案为什么划算**：它正好补上现在的真实短板 ——「近期部署引入缺陷」
+这条候选 `base_probability` 只有 0.10 且**没有探针**（只能靠
+`has_recent_change` 一个粗糙信号），日志里的异常堆栈更是 PromQL 完全看不到的。
+
+**设计要点**：LLM 输出必须是**结构化证据**（`{候选, 支持/反对, 强度}`），
+当作一条 evidence 参与贝叶斯更新，**不能直接当最终概率**；且一手信号（探针）
+优先，LLM 只在探针无数据 / 无探针时补位。
+
+**RAG 在 2C2G 上不现实**：chromadb + onnxruntime 磁盘 1GB+，本地 embedding
+模型另需几百 MB 内存。更划算的替代是历史故障入 SQLite + 简单统计（"该指标
+组合历史上 7 次有 5 次是 Redis"），几十行、零额外内存。
+
+> 另注：`README.md:511` 写「Agent 框架 = LangGraph 状态机」，但 Python 版实际
+> 是自建状态机。建议改为「自建状态机（节点 / 条件边 / 检查点，语义对齐
+> LangGraph StateGraph）」—— 更准确，且能讲清"为什么不用框架"反而更有说服力。
+
+### 5.23 落地 B 方案：LLM 作为补充证据源（commit `88842ad`）
+
+新增 `python/agents/llm_evidence.py`（232 行），按 §5.22 的 B 方案实现。
+**默认关闭**，是可选增强。
+
+**四条设计原则**（决定它不会把系统搞坏）：
+
+| # | 原则 | 落地 |
+|---|---|---|
+| 1 | LLM 输出的是**结构化证据**，不是置信度 | `{候选: (支持/反对, 强度)}`，作为一条 evidence 参与贝叶斯更新 |
+| 2 | **一手信号优先** | 探针已给出结论（成立/证伪）时 LLM 不参与，只在「无探针 / 探针无数据」时补位 |
+| 3 | **默认关闭 + 失败静默降级** | 无 key、超时、非 JSON、网络不通 → 返回空证据，闭环完全不受影响 |
+| 4 | **零新增依赖** | 标准库 `urllib` 调 OpenAI 兼容 `/chat/completions`，不引入 langchain |
+
+**融合边界**（安全性的关键）：
+
+```python
+MAX_SHIFT = 0.4
+likelihood = 0.5 ± 0.4 × strength，再夹到 [0.05, 0.9]
+```
+
+上限 0.9 与探针「成立」同档、下限 0.05 与「证伪」同档 —— **即便模型强度拉满，
+也无法单独把置信度顶过 `>= 0.3` 的自愈闸门**。它只能在一手信号的留白处起作用。
+
+**可解释性**：证据写入 `RCAEvent.evidence`（`type="llm_evidence"`，weight
+0.3，刻意低于指标 0.8 与变更记录 0.9），页面能看到它到底影响了哪条候选：
+
+```
+[RCAAgent] LLM 证据: 近期部署引入缺陷… 支持(0.60) → 似然 0.50 → 0.74
+```
+
+**配置**：复用既有的 `openai_*` 字段（此前无人读取，现在终于有用），新增：
+
+```bash
+AIOPS_LLM_EVIDENCE_ENABLED=true      # 默认 false
+AIOPS_OPENAI_API_KEY=sk-...
+AIOPS_OPENAI_BASE_URL=https://...    # 任何 OpenAI 兼容端点
+AIOPS_LLM_TIMEOUT_SECONDS=8          # RCA 在采集循环里同步调用，必须短
+```
+
+**调用时机**：每轮 RCA **只调一次**（一次覆盖全部候选，避免 N 次往返），
+且只在「无探针 / 探针无数据」的候选上生效。健康巡检不会触发。
+
+**测试 6/6**（离线，桩客户端，不打真实 API）：
+
+```
+A 默认关闭不介入        B 调用失败静默降级      C 非 JSON 返回被忽略
+D 模型编的候选被挡掉    E 证据被采纳且有上下限
+F 探针优先于 LLM（关键）← 探针证伪后，LLM 说支持也不能翻盘
+```
+
+F 是核心安全性质：否则模型可以靠一句话让系统去重启容器。
+
+**实测**（启用 + 指向不可达端点，验证降级路径）：
+
+```
+[LLMEvidence] 调用失败，降级为无 LLM 证据: <urlopen error [Errno 61] Connection refused>
+[RCAAgent] Root cause: Redis 连接挂起…（confidence: 0.99）
+演练闭环照常：监控 1ms | 根因 11ms | 自愈执行 5.64s → Redis healthy
+```
+
+**当前局限（诚实说明）**：项目还没有日志采集源，所以 `context` 默认为空，
+LLM 只能基于告警上下文与候选语义判断 —— 相当于一个语义化的软先验，不是
+真正的外部证据。接入日志/变更系统后把文本传进 `context` 即为真实证据，
+调用方无需改动。
+
 ---
 
 ## 补充改动
