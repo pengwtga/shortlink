@@ -22,3 +22,6 @@ Thumbs.db
 
 # Docker runtime volumes (host dirs mounted into containers)
 data/
+
+# 个人简历/项目说明草稿，不入库
+docs/RESUME.md
