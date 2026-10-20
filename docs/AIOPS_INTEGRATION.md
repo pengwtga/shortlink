@@ -1103,6 +1103,83 @@ MySQL：探针不成立（无连接超时）      → 似然 0.05 → 0.05 × 0.
 > 贝叶斯更新出后验。**先验决定谁更常见，探针决定这次是谁**，整个过程在
 > 页面上可解释。
 
+### 5.25 流水线支持起点 / 终点剪裁：这次为什么没上 LangGraph
+
+**起因**：想让流水线支持"指定从哪个节点开始、到哪个节点结束"，于是要能
+跳过前面的 / 后面的节点 —— 看起来像 LangGraph 的条件边，于是重新评估了一遍
+要不要上框架。
+
+**结论：不上。** 自建状态机加两个参数即可（约 20 行），见
+`core/orchestrator.py` 的 `run(start_node=..., end_node=...)`。
+
+先看现状：节点跳过机制**本来就在跑**，`WorkflowNode` 带
+`condition` + `skip_reason`，`run()` 里逐节点调 `node.should_execute(state)`。
+已有 4 个节点在用：
+
+| 节点 | 跳过条件 | 跳过原因 |
+|---|---|---|
+| rca | `alert_event is None` | 本轮监控未触发告警 |
+| heal_propose | confidence < 0.3 | 置信度不足，不提议自愈 |
+| change | `heal_event is None` | 没有待审批的方案 |
+| heal_execute | 审批未通过 | 闸门未放行不执行 |
+
+所以"跳跃节点"每天都在发生，只是它是**条件驱动**的。缺的只有"指定起终点"。
+
+#### 实现
+
+```python
+async def run(self, initial_state=None, metadata=None,
+              start_node: Optional[str] = None,   # 新增
+              end_node: Optional[str] = None):    # 新增
+```
+
+三个点值得记：
+
+1. **终点之后的节点也要标 SKIPPED**。只 `break` 的话它们停在 `PENDING`，
+   Dashboard 上显示成一排"待执行"，看着像流水线卡在终点不动——与 §5.21 踩过的
+   "跳过也要发快照"是同一类问题。
+2. **节点名不存在时忽略并 warning**。否则拼错一个字就会**静默把整条流水线
+   剪空**，表现为"点了没反应"，排查非常费劲。
+3. **现有 `condition` 逻辑一行未动**，纯增量。
+
+验证：`python/tests/test_orchestrator_range.py`，5 组用例（起点剪裁 / 终点剪裁
+含"不是 PENDING"断言 / 非法节点名 / 不传参回归 / 起终点组合），节点用假 Agent
+替换，不依赖 Prometheus 与 docker。
+
+#### 什么时候才真的需要 LangGraph
+
+| 需求 | 自建状态机 | LangGraph |
+|---|---|---|
+| `add_node` 节点 | ✅ `self._nodes` | 同 |
+| 条件跳过 | ✅ `condition` + `skip_reason`，已在用 | `add_conditional_edges` |
+| 指定起点 / 终点 | ✅ 本次加的，约 20 行 | `set_entry_point` |
+| 重试 / 熔断 | ✅ `max_retries` / `CircuitBreaker` | 同 |
+| 检查点 | ⚠️ `_checkpoints`（**内存 dict，重启即丢**） | checkpointer |
+| **有环的图**（自愈失败 → 换方案 → 升级人工） | ❌ 线性遍历撑不住 | ✅ |
+| **持久化中断恢复**（暂停等审批、重启后续跑） | ❌ | ✅ `interrupt` + checkpointer |
+
+**分界线是最后两行**，不是"起终点"。循环和持久化中断恢复才是 LangGraph 真正
+值回票价的地方——线性流水线用框架反而多一层抽象要调试。
+
+#### 面试讲法
+
+> 跳过节点这件事我的状态机本身就支持——每个节点带一个 condition，不满足就
+> 标记 SKIPPED 并在 Dashboard 上显示跳过原因，比如"置信度不足，不提议自愈"。
+> 至于指定起点和终点，遍历时加一个 started 标志、到终点 break 就行，二十行。
+>
+> **LangGraph 我评估过，它真正解决的是循环和持久化中断恢复**——如果以后要做
+> "自愈失败→换方案→升级人工"的升级链，那是有环的图，我会换过去；现在这条
+> 流水线是线性的，用了反而多一层抽象。
+
+#### 一处没做的改动（诚实记录）
+
+原本打算顺手让 `/api/v1/incidents/trigger` 跳过监控，读了代码后发现**不成立**：
+该接口传的是 `metric_data`（指标值）而不是告警，`monitor` 节点负责把指标变成
+`alert_event`，跳过它就没有告警、RCA 会因条件不满足直接跳过，整条流程空转。
+
+要让 trigger 跳过监控，得先手工构造 `AlertEvent` 塞进 `initial_state`——
+那是另一个改动，暂未做。
+
 ---
 
 ## 补充改动
