@@ -57,9 +57,11 @@ public class LinkService {
     public LinkResponse create(CreateLinkRequest request) {
         String longUrl = request.longUrl().trim();
         if (!longUrl.startsWith("http://") && !longUrl.startsWith("https://")) {
+            metrics.createOutcome(ShortlinkMetrics.CREATE_INVALID);
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "longUrl 必须以 http:// 或 https:// 开头");
         }
         if (request.expireAt() != null && request.expireAt().isBefore(LocalDateTime.now())) {
+            metrics.createOutcome(ShortlinkMetrics.CREATE_INVALID);
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "expireAt 不能早于当前时间");
         }
 
@@ -71,11 +73,25 @@ public class LinkService {
         link.setCode(code);
         link.setLongUrl(longUrl);
         link.setExpireAt(request.expireAt());
-        linkRepository.save(link);
+        try {
+            linkRepository.save(link);
+        } catch (RuntimeException e) {
+            metrics.createOutcome(ShortlinkMetrics.CREATE_DB_ERROR);
+            throw e;
+        }
 
-        redis.opsForValue().set(cacheKey(code), toCacheValue(longUrl, request.expireAt()),
-                Duration.ofHours(cacheTtlHours));
+        // Redis 回填。注意它也在 @Transactional 内，写失败会让创建整体失败
+        // —— 这是当前实现的已知约束（见 AIOPS_INTEGRATION §5.26），埋点如实
+        // 记录为 cache_error，不掩盖成 success。
+        try {
+            redis.opsForValue().set(cacheKey(code), toCacheValue(longUrl, request.expireAt()),
+                    Duration.ofHours(cacheTtlHours));
+        } catch (RuntimeException e) {
+            metrics.createOutcome(ShortlinkMetrics.CREATE_CACHE_ERROR);
+            throw e;
+        }
 
+        metrics.createOutcome(ShortlinkMetrics.CREATE_SUCCESS);
         return new LinkResponse(code, baseUrl + "/" + code, longUrl, request.expireAt());
     }
 

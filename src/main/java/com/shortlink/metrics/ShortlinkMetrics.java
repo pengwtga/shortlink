@@ -30,6 +30,17 @@ public class ShortlinkMetrics {
     /** 已过期，410 */
     public static final String OUTCOME_EXPIRED = "expired";
 
+    // ---- 创建链路 outcome ----
+    /** 创建成功 */
+    public static final String CREATE_SUCCESS = "success";
+    /** 入参校验失败（URL 前缀不合法 / expireAt 早于当前），400 */
+    public static final String CREATE_INVALID = "invalid_request";
+    /** MySQL 写入失败，5xx */
+    public static final String CREATE_DB_ERROR = "db_error";
+    /** Redis 回填失败。注意：当前实现里 Redis 写在 @Transactional 内，
+     *  因此它会让整个创建事务回滚 —— 见 AIOPS_INTEGRATION §5.26 的记录 */
+    public static final String CREATE_CACHE_ERROR = "cache_error";
+
     private final MeterRegistry registry;
 
     public ShortlinkMetrics(MeterRegistry registry) {
@@ -40,6 +51,19 @@ public class ShortlinkMetrics {
     public void redirectOutcome(String outcome) {
         Counter.builder("shortlink.redirect")
                 .description("短链跳转结果计数（按最终 outcome 互斥）")
+                .tag("outcome", outcome)
+                .register(registry)
+                .increment();
+    }
+
+    /**
+     * 记录一次创建请求的最终结果。与跳转 outcome 同样保持<b>互斥</b>：
+     * 一次创建只产生一个 outcome，因此 {@code sum(shortlink_create_total)}
+     * 恒等于创建请求数（不含被限流拦截的，那些走 scene="create" 的限流指标）。
+     */
+    public void createOutcome(String outcome) {
+        Counter.builder("shortlink.create")
+                .description("短链创建结果计数（按最终 outcome 互斥）")
                 .tag("outcome", outcome)
                 .register(registry)
                 .increment();

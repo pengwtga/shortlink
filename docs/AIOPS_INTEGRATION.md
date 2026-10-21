@@ -1180,6 +1180,164 @@ async def run(self, initial_state=None, metadata=None,
 要让 trigger 跳过监控，得先手工构造 `AlertEvent` 塞进 `initial_state`——
 那是另一个改动，暂未做。
 
+### 5.26 为什么只监控跳转链路？创建链路的观测缺口与补齐
+
+**问题**：整套告警规则和故障模式库都围绕**跳转**——`redirect_5xx_rate`、
+`dependency_hang`、探针查的是跳转吞吐和连接超时。创建链路呢？
+
+#### 一、聚焦跳转是有正当理由的（三条）
+
+**1. 流量差一个数量级**
+
+```
+压测 1,739,256 次请求：
+  跳转   ≈ 1,525,510 次（1,525,481 hit + 29 miss）  → 约 88%
+  创建等 ≈   213,746 次                             → 约 12%
+```
+
+跳转是核心读路径，挂掉影响全部用户。
+
+**2. 依赖关系不对称，故障模式也不同**
+
+| | 跳转 | 创建 |
+|---|---|---|
+| Redis | 读（命中则直接返回） | 写（回填缓存） |
+| MySQL | 回源查询（miss 时） | **写**（主表） |
+| Kafka | 异步发点击事件 | 不涉及 |
+| 失败表现 | **可能挂起不返回** → 无 5xx、监控一片绿 | 同步返回 5xx，客户端立刻知道 |
+
+`dependency_hang` 这条规则专门抓"请求挂住、既不成功也不报错"——这种故障在
+创建链路上**根本不会发生**（写失败就是明确的错误响应）。跳转的故障模式更丰富
+也更隐蔽，更需要探针去发现。
+
+**3. 最关键：创建故障，自愈帮不上忙**
+
+```
+restart_redis      L0  ← 自动执行
+restart_mysql      L1  ← 需 oncall 确认
+scale_app/rate_limit L2 ← 只提建议
+```
+
+创建链路最常见的坏因是 MySQL 写失败，而 `restart_mysql` 是 **L1，系统本来就不
+自动执行**。即使给创建做了完整告警和根因定位，最后还是要人处理——**自愈的价值
+在这条链路上体现不出来**。而跳转故障对应 `restart_redis` 是 L0，能真正闭环。
+
+#### 二、创建链路并不是裸奔（有间接覆盖）
+
+`redirect_5xx_rate` 用的是：
+
+```
+sum(rate(http_server_requests_seconds_count{status=~"5.."}[1m]))
+```
+
+`http_server_requests_seconds_count` 是 Spring Boot 的**通用 HTTP 指标，涵盖所有
+端点**，创建接口的 5xx 也在里面。而且阈值是**绝对速率 0.5 req/s，不是比率**——
+创建接口全挂（比如 10 req/s 的 5xx）会触发，**不会被跳转的巨大流量稀释掉**。
+
+#### 三、真实的缺口在"定位"，不在"发现"
+
+```
+创建接口 5xx 升高
+  → 触发 redirect_5xx_rate
+  → 按告警名匹配故障模式库 → 拿到的是「跳转」那 4 条候选
+  → 探针查跳转吞吐、连接超时 → 创建挂了但跳转正常时全部"成立"
+  → 落到无探针的兜底候选 → 转人工
+```
+
+**好消息**：不会乱重启（探针全证伪会转人工，闸门设计生效了）。
+
+**坏消息**：定位不出真凶。创建链路特有的坏因——雪花 ID 时钟回拨、URL 校验失败、
+MySQL 写冲突、Redis 写失败——故障模式库里一条都没有。
+
+#### 四、补齐（已实现）
+
+**① 短链侧加创建链路指标**
+
+`ShortlinkMetrics.createOutcome(outcome)` → `shortlink_create_total{outcome}`，
+与跳转同样保持 **outcome 互斥**：
+
+| outcome | 含义 |
+|---|---|
+| `success` | 创建成功 |
+| `invalid_request` | 入参校验失败（URL 前缀 / expireAt），400 |
+| `db_error` | MySQL 写入失败，5xx |
+| `cache_error` | Redis 回填失败 |
+
+**② AIOps 侧加告警规则**
+
+```
+create_5xx_rate   uri="/api/v1/links" 的 5xx 速率 > 0.5/s
+kind = root_cause（独立开闭环）   severity = HIGH
+```
+
+`redirect_5xx_rate` 保持 `symptom` 不变。
+
+**③ 故障模式库加 4 条创建链路候选**（先验之和 1）
+
+| 候选 | 先验 | 探针 |
+|---|---|---|
+| MySQL 写入失败（连接池打满） | 0.45 | `hikaricp_connections_pending > 5` |
+| Redis 回填失败（创建事务含缓存写） | 0.30 | 命中吞吐 `< 0.05` |
+| 创建限流阈值过低（5 次/60s） | 0.15 | `ratelimit_rejected{scene="create"} > 1/s` |
+| 雪花 ID 时钟回拨导致主键冲突 | 0.10 | 无探针 |
+
+#### 五、★ 实现时差点踩进去的坑
+
+**故障模式库的 key 必须等于告警名。**
+
+`_get_fault_candidates` 用**子串匹配**：
+
+```python
+if pattern_key in normalized or normalized in pattern_key:
+```
+
+我最初把 key 命名成语义化的 `create_failure`，而告警名是 `create_5xx_rate`——
+两者**互不为子串**，匹配不上，会静默落到 `FALLBACK_FAULT_PATTERNS`。
+
+症状极其隐蔽：**能正常告警，但永远定位不出根因**，看起来像"根因分析能力不行"，
+实际是取错了名字。
+
+现有 key 都遵循这个约定（`redirect_5xx_rate` / `shortlink_app_down` /
+`consume_lag_backlog` / `ratelimit_reject_burst` 全部与告警名一致）。测试
+`test_create_path_monitoring.py` 的 [1] 显式断言 `hits == [告警名]` 来锁死这点。
+
+#### 六、顺带发现的一个设计问题（未改，记录在此）
+
+创建方法带 `@Transactional`，而 **Redis 回填写在这个事务内**：
+
+```java
+@Transactional
+public LinkResponse create(...) {
+    linkRepository.save(link);        // MySQL
+    redis.opsForValue().set(...);     // Redis —— 也在事务内
+}
+```
+
+后果：**Redis 不可达会让整个创建失败并回滚**，哪怕 MySQL 已经写成功。
+
+但从业务上看，创建只需要 MySQL 成功即可——缓存没回填，首次跳转时会 miss 并回源
+回填，功能不受影响。**创建不应该把 Redis 当成强依赖。**
+
+埋点如实记为 `cache_error` 而不是掩盖成 `success`。改法是把 Redis 写移出事务
+或包 try-catch 降级（只 warn），但这属于行为变更，本次未做。
+
+#### 面试讲法
+
+> 创建链路我确实没做独立的根因定位，这是有意的取舍，也是当时的缺口。
+>
+> 理由三条：跳转占总请求约 88% 是核心读路径；创建依赖少、失败是同步 5xx，
+> 不存在跳转那种"挂起但不报错"的隐蔽故障；最关键的是——**创建故障对应的修复
+> 动作是重启 MySQL，那是 L1，系统本来就不自动执行，做了告警也闭环不了**。
+>
+> 现在创建接口的 5xx 会被通用 HTTP 指标间接捕获（阈值是绝对速率，不会被大流量
+> 稀释），但定位会走跳转那套候选，最后大概率落到"未能定位根因"。所以补了三件事：
+> 加 `shortlink_create_total{outcome}`、加一条 create 专属规则、给故障模式库补
+> 创建特有的候选。
+>
+> 补的过程中踩了一个坑：故障模式库的 key 必须等于告警名，因为匹配用的是子串。
+> 我一开始按语义取名 `create_failure`，结果匹配不上、静默落到兜底候选——
+> **能告警但永远定位不出**，很难排查。
+
 ---
 
 ## 补充改动
